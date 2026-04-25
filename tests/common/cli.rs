@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use rmux_client::INTERNAL_DAEMON_FLAG;
@@ -14,7 +15,10 @@ use crate::common::{
 
 const TEST_SHELL_STARTUP: &str = "export PS1='tester@RMUXHOST:~$ '\nexport PROMPT=\"$PS1\"\n";
 
+type CliHarnessLock = MutexGuard<'static, ()>;
+
 pub(crate) struct CliHarness {
+    _harness_lock: CliHarnessLock,
     tmpdir: PathBuf,
     socket_path: PathBuf,
     launcher_path: PathBuf,
@@ -23,6 +27,7 @@ pub(crate) struct CliHarness {
 
 impl CliHarness {
     pub(crate) fn new(label: &str) -> Result<Self, Box<dyn Error>> {
+        let harness_lock = acquire_cli_harness_lock();
         let tmpdir = unique_tmpdir(label);
         fs::create_dir_all(&tmpdir)?;
         write_test_shell_startup_files(&tmpdir.join("home"))?;
@@ -31,6 +36,7 @@ impl CliHarness {
         let pid_path = tmpdir.join("rmux.pid");
 
         Ok(Self {
+            _harness_lock: harness_lock,
             tmpdir,
             socket_path,
             launcher_path,
@@ -102,6 +108,14 @@ impl CliHarness {
     pub(crate) fn tmpdir(&self) -> &Path {
         &self.tmpdir
     }
+}
+
+fn acquire_cli_harness_lock() -> CliHarnessLock {
+    static CLI_HARNESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    CLI_HARNESS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn write_test_shell_startup_files(home: &Path) -> Result<(), Box<dyn Error>> {
