@@ -289,17 +289,31 @@ pub(crate) struct TestHarness {
 impl TestHarness {
     pub(crate) fn new(label: &str) -> Self {
         let unique_id = UNIQUE_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "rmux-server-test-{label}-{}-{unique_id}",
+        let root = PathBuf::from("/tmp").join(format!(
+            "rxs-{}-{}-{unique_id}",
+            compact_label(label),
             std::process::id()
         ));
-        let socket_path = root.join("default.sock");
+        let socket_path = root.join("s.sock");
 
         Self { root, socket_path }
     }
 
     pub(crate) fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+}
+
+fn compact_label(label: &str) -> String {
+    let compact = label
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(16)
+        .collect::<String>();
+    if compact.is_empty() {
+        "x".to_owned()
+    } else {
+        compact
     }
 }
 
