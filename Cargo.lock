@@ -402,6 +402,7 @@ dependencies = [
 name = "rmux-os"
 version = "0.0.2"
 dependencies = [
+ "libc",
  "rustix",
 ]
 
