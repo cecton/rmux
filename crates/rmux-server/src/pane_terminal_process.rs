@@ -87,6 +87,7 @@ impl PaneTerminal {
 impl Drop for PaneTerminal {
     fn drop(&mut self) {
         let _ = self.child.kill(Signal::HUP);
+        let _ = self.child.kill_session_leader(Signal::HUP);
         for _ in 0..10 {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,
@@ -95,7 +96,13 @@ impl Drop for PaneTerminal {
             }
         }
         let _ = self.child.kill(Signal::KILL);
-        let _ = self.child.wait();
+        let _ = self.child.kill_session_leader(Signal::KILL);
+        for _ in 0..50 {
+            match self.child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
     }
 }
 

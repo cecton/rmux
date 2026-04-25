@@ -5,7 +5,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 
-use rustix::process::Pid;
+use rustix::process::{kill_process, Pid};
 
 use crate::{backend, PtyError, PtyMaster, PtyPair, Result, Signal, TerminalSize};
 
@@ -164,6 +164,16 @@ impl PtyChild {
     /// delegated work to descendants.
     pub fn kill(&self, signal: Signal) -> Result<()> {
         backend::kill_foreground_process_group(self.pid, signal)
+    }
+
+    /// Sends a signal directly to the PTY session leader.
+    ///
+    /// This is a teardown fallback for shells that move foreground jobs into a
+    /// different process group while the session leader is still the child that
+    /// must be reaped by RMUX.
+    pub fn kill_session_leader(&self, signal: Signal) -> Result<()> {
+        kill_process(self.pid, signal)?;
+        Ok(())
     }
 }
 
