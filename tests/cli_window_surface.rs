@@ -992,7 +992,13 @@ fn swap_window_preserves_explicit_window_names_after_auto_rename_tracking(
         "#{window_index}:#{window_name}",
     ])?;
     assert_eq!(windows.status.code(), Some(0));
-    assert_eq!(stdout(&windows), "0:before-two\n2:bash\n3:two\n");
+    assert_shell_window_names(
+        &stdout(&windows),
+        &[
+            "0:before-two\n2:bash\n3:two\n",
+            "0:before-two\n2:zsh\n3:two\n",
+        ],
+    );
     assert!(stderr(&windows).is_empty());
 
     terminate_child(daemon.child_mut())?;
@@ -1159,6 +1165,13 @@ fn wait_for_file_contents(
 
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+fn assert_shell_window_names(actual: &str, accepted: &[&str]) {
+    assert!(
+        accepted.contains(&actual),
+        "expected one of {accepted:?}, got {actual:?}"
+    );
 }
 
 fn window_surface_guard() -> MutexGuard<'static, ()> {
