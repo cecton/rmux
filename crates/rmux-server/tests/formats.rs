@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::{error::Error, path::Path};
 mod common;
 

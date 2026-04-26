@@ -13,12 +13,12 @@ use tokio::task::JoinHandle;
 #[cfg(unix)]
 use tracing::debug;
 
-use rmux_ipc::LocalEndpoint;
-#[cfg(unix)]
-use rmux_ipc::LocalListener;
+use rmux_ipc::{LocalEndpoint, LocalListener};
 
 #[cfg(unix)]
 use crate::listener;
+#[cfg(windows)]
+use crate::windows_runtime;
 
 #[cfg(all(test, unix))]
 const FALLBACK_SOCKET_ROOT: &str = "/tmp";
@@ -178,7 +178,6 @@ pub(crate) struct ShutdownHandle {
 }
 
 impl ShutdownHandle {
-    #[cfg(unix)]
     pub(crate) fn new() -> (Self, oneshot::Receiver<()>) {
         let (sender, receiver) = oneshot::channel();
         (
@@ -232,11 +231,18 @@ impl ServerDaemon {
 
         #[cfg(windows)]
         {
-            let _ = self;
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "rmux-server runtime is not enabled on Windows yet",
-            ))
+            let endpoint = LocalEndpoint::from_path(self.config.socket_path().to_path_buf());
+            let listener = LocalListener::bind(&endpoint)?;
+            let (shutdown_handle, shutdown_receiver) = ShutdownHandle::new();
+            let socket_path = self.config.socket_path().to_path_buf();
+
+            let task = tokio::spawn(windows_runtime::serve(listener, shutdown_receiver));
+
+            Ok(ServerHandle {
+                socket_path,
+                shutdown_handle,
+                task: Some(task),
+            })
         }
     }
 }
@@ -574,5 +580,75 @@ mod tests {
             std::io::ErrorKind::TimedOut,
             format!("socket '{}' stayed reachable", socket_path.display()),
         ))
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod tests {
+    use super::{DaemonConfig, ServerDaemon};
+    use rmux_proto::{
+        encode_frame, ErrorResponse, FrameDecoder, ListSessionsRequest, Request, Response,
+        RmuxError,
+    };
+    use std::io::{self, Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static UNIQUE_ID: AtomicUsize = AtomicUsize::new(0);
+
+    #[tokio::test]
+    async fn windows_daemon_accepts_ipc_and_reports_runtime_unsupported() -> io::Result<()> {
+        let endpoint = unique_endpoint()?;
+        let socket_path = endpoint.clone().into_path();
+        let handle = ServerDaemon::new(DaemonConfig::new(socket_path.clone()))
+            .bind()
+            .await?;
+
+        let response = tokio::task::spawn_blocking(move || {
+            let mut stream = rmux_ipc::connect_blocking(&endpoint, Duration::from_secs(5))?;
+            let request = Request::ListSessions(ListSessionsRequest {
+                format: None,
+                filter: None,
+                sort_order: None,
+                reversed: false,
+            });
+            let frame = encode_frame(&request).map_err(io::Error::other)?;
+            stream.write_all(&frame)?;
+            read_response(&mut stream)
+        })
+        .await
+        .map_err(io::Error::other)??;
+
+        assert!(matches!(
+            response,
+            Response::Error(ErrorResponse {
+                error: RmuxError::Server(message)
+            }) if message.contains("Windows IPC")
+        ));
+        assert_eq!(handle.socket_path(), socket_path.as_path());
+        handle.shutdown().await
+    }
+
+    fn unique_endpoint() -> io::Result<rmux_ipc::LocalEndpoint> {
+        let unique_id = UNIQUE_ID.fetch_add(1, Ordering::Relaxed);
+        rmux_ipc::endpoint_for_label(format!("server-windows-{}-{unique_id}", std::process::id()))
+    }
+
+    fn read_response(stream: &mut rmux_ipc::BlockingLocalStream) -> io::Result<Response> {
+        let mut decoder = FrameDecoder::new();
+        let mut buffer = [0_u8; 8192];
+
+        loop {
+            if let Some(response) = decoder.next_frame::<Response>().map_err(io::Error::other)? {
+                return Ok(response);
+            }
+
+            let bytes_read = stream.read(&mut buffer)?;
+            if bytes_read == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            decoder.push_bytes(&buffer[..bytes_read]);
+        }
     }
 }

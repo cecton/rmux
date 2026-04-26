@@ -52,6 +52,8 @@ mod server_access;
 mod terminal;
 #[cfg(unix)]
 mod wait_for;
+#[cfg(windows)]
+mod windows_runtime;
 
 pub use daemon::{
     default_socket_path, ConfigFileSelection, ConfigLoadOptions, DaemonConfig, ServerDaemon,

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::error::Error;
 use std::io;
 use std::os::unix::net::UnixStream as StdUnixStream;
