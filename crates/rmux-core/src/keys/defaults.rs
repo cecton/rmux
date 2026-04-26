@@ -133,7 +133,7 @@ pub(crate) const DEFAULT_BINDING_STRINGS: &[&str] = &[
     "bind -n DoubleClick1Pane { select-pane -t=; if -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send -M } { copy-mode -H; send -X select-word; run -d0.3; send -X copy-pipe-and-cancel } }",
     "bind -n TripleClick1Pane { select-pane -t=; if -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' { send -M } { copy-mode -H; send -X select-line; run -d0.3; send -X copy-pipe-and-cancel } }",
     "bind -n MouseDrag1Border { resize-pane -M }",
-    "bind -n MouseDown1Status { switch-client -t= }",
+    "bind -n MouseDown1Status { select-window -t= }",
     "bind -n C-MouseDown1Status { swap-window -t@ }",
     "bind -n WheelDownStatus { next-window }",
     "bind -n WheelUpStatus { previous-window }",

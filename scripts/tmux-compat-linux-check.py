@@ -22,6 +22,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\a]*(?:\a|\x1b\\))")
+KEY_BINDING_RE = re.compile(
+    r"^bind-key\s+(?:-r\s+)?-T\s+(?P<table>\S+)\s+(?P<key>\S+)(?:\s+(?P<command>.*))?$"
+)
 
 
 @dataclass
@@ -106,6 +109,8 @@ class check:
         self.rmux.kill_server()
         wait_for_missing(self.tmux.socket)
         wait_for_missing(self.rmux.socket)
+        remove_stale_socket(self.tmux.socket)
+        remove_stale_socket(self.rmux.socket)
 
     def normalize(self, text: str, *, brand: bool = True) -> str:
         text = ANSI_RE.sub("", text).replace("\r", "")
@@ -150,6 +155,48 @@ class check:
             return
         self.findings.append(
             Finding(scope, name, f"`{shell_join(args)}` acceptance differs", tmux, rmux)
+        )
+
+    def compare_key_table_contract(self, table: str) -> None:
+        args = ["list-keys", "-T", table]
+        tmux = self.tmux.run(args)
+        rmux = self.rmux.run(args)
+        if tmux.status != 0 or rmux.status != 0 or tmux.timed_out or rmux.timed_out:
+            self.findings.append(
+                Finding("surface", f"list-keys-{table}", f"`{shell_join(args)}` did not run cleanly", tmux, rmux)
+            )
+            return
+
+        tmux_bindings = parse_key_bindings(tmux.stdout)
+        rmux_bindings = parse_key_bindings(rmux.stdout)
+        missing = []
+        changed = []
+        for key, tmux_command in sorted(tmux_bindings.items()):
+            rmux_command = rmux_bindings.get(key)
+            if rmux_command is None:
+                missing.append(key)
+                continue
+            if first_command_word(tmux_command) != first_command_word(rmux_command):
+                changed.append(
+                    f"{key}: tmux `{tmux_command}` vs rmux `{rmux_command}`"
+                )
+
+        if not missing and not changed:
+            self.passed.append(f"surface:list-keys-{table}")
+            return
+
+        self.findings.append(
+            Finding(
+                "surface",
+                f"list-keys-{table}",
+                "default key table contract diverges",
+                tmux,
+                rmux,
+                notes=[
+                    f"missing keys: {', '.join(missing) if missing else '<none>'}",
+                    "changed commands:\n" + "\n".join(changed) if changed else "changed commands: <none>",
+                ],
+            )
         )
 
     def run_smoke(self) -> None:
@@ -200,9 +247,9 @@ class check:
             self.compare_exact("error-surface", name, args)
 
         self.cleanup()
-        self.compare_exact("surface", "list-commands-format", ["list-commands", "-F", "#{command_name}"])
+        self.compare_exact("surface", "list-commands-format", ["list-commands", "-F", "#{command_list_name}"])
         for table in ["prefix", "root", "copy-mode", "copy-mode-vi"]:
-            self.compare_exact("surface", f"list-keys-{table}", ["list-keys", "-T", table])
+            self.compare_key_table_contract(table)
 
     def run_attached_smoke(self) -> None:
         if shutil.which("python3") is None:
@@ -306,6 +353,48 @@ def wait_for_missing(path: Path, *, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while path.exists() and time.monotonic() < deadline:
         time.sleep(0.02)
+
+
+def remove_stale_socket(path: Path) -> None:
+    try:
+        if path.exists() or path.is_socket():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def parse_key_bindings(text: str) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for line in ANSI_RE.sub("", text).replace("\r", "").splitlines():
+        match = KEY_BINDING_RE.match(line)
+        if match is None:
+            continue
+        key = normalize_key_label(match.group("key"))
+        bindings[key] = match.group("command") or ""
+    return bindings
+
+
+def normalize_key_label(label: str) -> str:
+    if len(label) >= 2 and label[0] == label[-1] and label[0] in {"'", '"'}:
+        label = label[1:-1]
+    if label.startswith("\\") and len(label) > 1:
+        label = label[1:]
+
+    parts = label.split("-")
+    if len(parts) <= 1:
+        return label
+
+    modifier_order = {"C": 0, "S": 1, "M": 2}
+    modifiers = parts[:-1]
+    if not all(modifier in modifier_order for modifier in modifiers):
+        return label
+    ordered = sorted(modifiers, key=modifier_order.__getitem__)
+    return "-".join([*ordered, parts[-1]])
+
+
+def first_command_word(command: str) -> str:
+    words = command.strip().split(maxsplit=1)
+    return words[0] if words else ""
 
 
 def shell_join(args: list[str]) -> str:

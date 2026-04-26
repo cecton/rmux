@@ -609,7 +609,7 @@ fn unsupported_subcommands_exit_one() -> Result<(), Box<dyn Error>> {
     let output = harness.run(&["bogus-command"])?;
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("unrecognized subcommand"));
+    assert_absent_server_error(&output, &harness, "bogus-command");
     assert!(stdout(&output).is_empty());
     assert!(!harness.socket_path().exists());
     Ok(())
@@ -1314,6 +1314,7 @@ fn simple_commands_report_absent_server_on_stderr() -> Result<(), Box<dyn Error>
         ("next-layout", &["-t", "alpha:0"]),
         ("previous-layout", &["-t", "alpha:0"]),
         ("resize-pane", &["-t", "alpha:0.0", "-x", "34"]),
+        ("resize-pane", &["-x", "notnum"]),
         ("display-message", &["-t", "alpha", "hello"]),
         ("list-panes", &["-t", "alpha"]),
         ("select-pane", &["-t", "alpha:0.0"]),

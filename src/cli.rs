@@ -1,7 +1,7 @@
 //! Public CLI dispatch for the RMUX binary.
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[path = "cli/capture_pane.rs"]
 mod capture_pane;
@@ -88,7 +88,10 @@ where
         return Err(error);
     }
 
-    let mut cli = parse(args).map_err(ExitFailure::from_clap)?;
+    let mut cli = match parse(args.clone()) {
+        Ok(cli) => cli,
+        Err(error) => return parse_failure_or_absent_server(&args, error),
+    };
     cli.utf8 |= infer_client_utf8_from_env();
     let command_was_provided = cli.command.is_some();
     validate_top_level_invocation(&cli, command_was_provided)?;
@@ -118,6 +121,98 @@ where
     let client_terminal = client_terminal_context_from_cli(&cli);
     let commands = cli.into_command_queue();
     dispatch_command_queue(commands, &socket_path, startup, client_terminal)
+}
+
+fn parse_failure_or_absent_server(
+    args: &[OsString],
+    error: clap::Error,
+) -> Result<i32, ExitFailure> {
+    if !parse_failure_should_probe_server(args, &error) {
+        return Err(ExitFailure::from_clap(error));
+    }
+
+    let Some((socket_name, socket_path)) = recover_socket_selection(args.get(1..).unwrap_or(&[]))
+    else {
+        return Err(ExitFailure::from_clap(error));
+    };
+    let resolved = resolve_socket_path(socket_name.as_deref(), socket_path.as_deref())
+        .map_err(ExitFailure::from_client)?;
+
+    match connect(&resolved) {
+        Ok(_) => Err(ExitFailure::from_clap(error)),
+        Err(connect_error) => Err(ExitFailure::from_client_connect(&resolved, connect_error)),
+    }
+}
+
+fn parse_failure_should_probe_server(args: &[OsString], error: &clap::Error) -> bool {
+    match error.kind() {
+        clap::error::ErrorKind::InvalidSubcommand => true,
+        clap::error::ErrorKind::ValueValidation => {
+            first_command_token(args.get(1..).unwrap_or(&[])).as_deref() == Some("resize-pane")
+        }
+        _ => false,
+    }
+}
+
+fn recover_socket_selection(arguments: &[OsString]) -> Option<(Option<OsString>, Option<PathBuf>)> {
+    let mut socket_name = None;
+    let mut socket_path = None;
+    let mut index = 0;
+
+    while index < arguments.len() {
+        let argument = arguments[index].to_str()?;
+        if argument == "--" {
+            break;
+        }
+        if !argument.starts_with('-') || argument == "-" {
+            break;
+        }
+
+        match argument {
+            "-L" => {
+                index += 1;
+                socket_name = arguments.get(index).cloned();
+            }
+            "-S" => {
+                index += 1;
+                socket_path = arguments.get(index).cloned().map(PathBuf::from);
+            }
+            "-c" | "-f" | "-T" => {
+                index += 1;
+            }
+            value if value.starts_with("-L") && value.len() > 2 => {
+                socket_name = Some(OsString::from(&value[2..]));
+            }
+            value if value.starts_with("-S") && value.len() > 2 => {
+                socket_path = Some(PathBuf::from(&value[2..]));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    Some((socket_name, socket_path))
+}
+
+fn first_command_token(arguments: &[OsString]) -> Option<String> {
+    let mut index = 0;
+
+    while index < arguments.len() {
+        let argument = arguments[index].to_str()?;
+        if argument == "--" {
+            return arguments.get(index + 1)?.to_str().map(str::to_owned);
+        }
+        if !argument.starts_with('-') || argument == "-" {
+            return Some(argument.to_owned());
+        }
+
+        if matches!(argument, "-c" | "-f" | "-L" | "-S" | "-T") {
+            index += 1;
+        }
+        index += 1;
+    }
+
+    None
 }
 
 fn connect_with_startserver(
