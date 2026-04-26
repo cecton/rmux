@@ -8,6 +8,9 @@ use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use rmux_os::identity::{IdentityResolver, UserIdentity};
+
 const DEFAULT_SOCKET_LABEL: &str = "default";
 #[cfg(unix)]
 const FALLBACK_SOCKET_ROOT: &str = "/tmp";
@@ -15,6 +18,8 @@ const RMUX_ENV: &str = "RMUX";
 #[cfg(unix)]
 const RMUX_TMPDIR_ENV: &str = "RMUX_TMPDIR";
 const SOCKET_DIR_PREFIX: &str = "rmux";
+#[cfg(windows)]
+const PIPE_PREFIX: &str = r"\\.\pipe\";
 
 /// Address of a local RMUX endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -40,6 +45,13 @@ impl LocalEndpoint {
     pub fn into_path(self) -> PathBuf {
         self.path
     }
+
+    /// Returns the Windows named-pipe path for this endpoint.
+    #[cfg(windows)]
+    #[must_use]
+    pub fn as_pipe_name(&self) -> &OsStr {
+        self.path.as_os_str()
+    }
 }
 
 /// Computes the default RMUX endpoint.
@@ -59,11 +71,18 @@ fn endpoint_for_label_impl(label: &OsStr) -> io::Result<LocalEndpoint> {
 }
 
 #[cfg(windows)]
-fn endpoint_for_label_impl(_label: &OsStr) -> io::Result<LocalEndpoint> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Windows named-pipe endpoint naming is not implemented until Milestone 6",
-    ))
+fn endpoint_for_label_impl(label: &OsStr) -> io::Result<LocalEndpoint> {
+    let identity = IdentityResolver::current()?;
+    let UserIdentity::Sid(sid) = identity else {
+        return Err(io::Error::other(
+            "Windows identity resolver returned a non-SID identity",
+        ));
+    };
+    let label = pipe_component(label);
+    let sid = pipe_component(OsStr::new(sid.as_ref()));
+    Ok(LocalEndpoint::from_path(PathBuf::from(format!(
+        "{PIPE_PREFIX}{SOCKET_DIR_PREFIX}-{sid}-{label}"
+    ))))
 }
 
 #[cfg(unix)]
@@ -172,6 +191,23 @@ fn path_buf_from_bytes(bytes: Vec<u8>) -> PathBuf {
     PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+#[cfg(windows)]
+fn pipe_component(value: &OsStr) -> String {
+    let mut component = String::new();
+    for ch in value.to_string_lossy().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            component.push(ch);
+        } else {
+            component.push('_');
+        }
+    }
+    if component.is_empty() {
+        DEFAULT_SOCKET_LABEL.to_owned()
+    } else {
+        component
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,8 +238,22 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn default_endpoint_is_explicitly_unsupported_until_named_pipes_land() {
-        let error = default_endpoint().expect_err("Windows endpoint is Milestone 6 scope");
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    fn default_endpoint_uses_a_user_scoped_named_pipe() {
+        let path = default_endpoint()
+            .expect("default named-pipe endpoint")
+            .into_path();
+        let path = path.to_string_lossy();
+
+        assert!(path.starts_with(r"\\.\pipe\rmux-S-"));
+        assert!(path.ends_with("-default"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pipe_labels_are_sanitized() {
+        assert_eq!(
+            pipe_component(OsStr::new("alpha/beta:gamma")),
+            "alpha_beta_gamma"
+        );
     }
 }

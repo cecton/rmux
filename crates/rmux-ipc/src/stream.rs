@@ -1,13 +1,23 @@
 //! Local stream handles.
 
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::io;
+#[cfg(windows)]
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::path::Path;
 use std::time::Duration;
-#[cfg(unix)]
 use std::time::Instant;
 
 use crate::LocalEndpoint;
+
+#[cfg(windows)]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
 
 /// Identity of a connected local peer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,11 +38,14 @@ pub type BlockingLocalStream = std::os::unix::net::UnixStream;
 
 /// Async local byte stream default_value for Windows until named pipes are added.
 #[cfg(windows)]
-pub struct LocalStream;
+pub type LocalStream = tokio::net::windows::named_pipe::NamedPipeServer;
 
-/// Blocking local byte stream default_value for Windows until named pipes are added.
+/// Blocking local byte stream used by the CLI.
 #[cfg(windows)]
-pub struct BlockingLocalStream;
+pub struct BlockingLocalStream {
+    inner: NamedPipeClient,
+    runtime: tokio::runtime::Runtime,
+}
 
 #[cfg(unix)]
 impl PeerIdentity {
@@ -45,6 +58,16 @@ impl PeerIdentity {
         let pid = u32::try_from(pid)
             .map_err(|_| io::Error::other(format!("invalid unix peer pid {pid}")))?;
         Ok(Self { pid, uid })
+    }
+}
+
+#[cfg(windows)]
+impl PeerIdentity {
+    pub(crate) fn current_process() -> Self {
+        Self {
+            pid: std::process::id(),
+            uid: 0,
+        }
     }
 }
 
@@ -110,13 +133,61 @@ pub fn connect_blocking(
 #[cfg(windows)]
 /// Connects a blocking client stream to a local endpoint.
 pub fn connect_blocking(
-    _endpoint: &LocalEndpoint,
-    _timeout: Duration,
+    endpoint: &LocalEndpoint,
+    timeout: Duration,
 ) -> io::Result<BlockingLocalStream> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Windows named-pipe transport is not implemented until Milestone 6",
-    ))
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()?;
+    let deadline = Instant::now() + timeout;
+    let pipe_name = endpoint.as_pipe_name().to_owned();
+    loop {
+        match runtime.block_on(open_named_pipe_client(&pipe_name)) {
+            Ok(inner) => return Ok(BlockingLocalStream { inner, runtime }),
+            Err(error) if connect_retryable(&error) => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out after {}s connecting to '{}'",
+                            timeout.as_secs_f32(),
+                            endpoint.as_path().display()
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn connect_retryable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32)
+}
+
+#[cfg(windows)]
+async fn open_named_pipe_client(pipe_name: &OsString) -> io::Result<NamedPipeClient> {
+    ClientOptions::new().open(pipe_name)
+}
+
+#[cfg(windows)]
+impl Read for BlockingLocalStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.runtime.block_on(self.inner.read(buf))
+    }
+}
+
+#[cfg(windows)]
+impl Write for BlockingLocalStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.runtime.block_on(self.inner.write(buf))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.runtime.block_on(self.inner.flush())
+    }
 }
 
 #[cfg(target_os = "linux")]
