@@ -1,4 +1,4 @@
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -40,7 +40,7 @@ impl PaneTerminal {
     }
 
     pub(crate) fn master_fd(&self) -> BorrowedFd<'_> {
-        self.master.as_fd()
+        self.master.io().as_fd()
     }
 
     pub(crate) fn clone_master(&self) -> rmux_pty::Result<PtyMaster> {
@@ -48,8 +48,7 @@ impl PaneTerminal {
     }
 
     pub(crate) fn pid(&self) -> u32 {
-        u32::try_from(self.child.pid().as_raw_nonzero().get())
-            .expect("pane child pid must be positive")
+        self.child.pid().as_u32()
     }
 
     pub(crate) fn tty_path(&self) -> Option<PathBuf> {

@@ -435,6 +435,7 @@ name = "rmux-pty"
 version = "3.9.2"
 dependencies = [
  "libc",
+ "rmux-types",
  "rustix",
 ]
 

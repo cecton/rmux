@@ -1,92 +1,248 @@
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::io;
 
-use crate::{backend, Result, TerminalSize};
+#[cfg(unix)]
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
-/// The master endpoint of a pseudoterminal.
+#[cfg(unix)]
+use crate::backend;
+#[cfg(not(unix))]
+use crate::PtyError;
+use crate::{Result, TerminalSize};
+
+#[cfg(unix)]
 #[derive(Debug)]
-pub struct PtyMaster {
+pub(crate) struct PtySlave {
     fd: OwnedFd,
 }
 
+#[cfg(unix)]
+impl PtySlave {
+    pub(crate) fn try_clone(&self) -> Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+        })
+    }
+
+    pub(crate) fn into_owned_fd(self) -> OwnedFd {
+        self.fd
+    }
+}
+
+/// The I/O endpoint for a pseudoterminal.
+#[derive(Debug)]
+pub struct PtyIo {
+    #[cfg(unix)]
+    fd: OwnedFd,
+}
+
+impl PtyIo {
+    #[cfg(unix)]
+    pub(crate) fn new(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
+
+    /// Queries the current terminal geometry for this PTY endpoint.
+    pub fn size(&self) -> Result<TerminalSize> {
+        #[cfg(unix)]
+        {
+            backend::query_size(self.fd.as_fd())
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported("query pty size"))
+        }
+    }
+
+    /// Resizes this PTY endpoint.
+    pub fn resize(&self, size: TerminalSize) -> Result<()> {
+        #[cfg(unix)]
+        {
+            backend::apply_size(self.fd.as_fd(), size)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = size;
+            Err(PtyError::Unsupported("resize pty"))
+        }
+    }
+
+    /// Duplicates this PTY I/O endpoint.
+    pub fn try_clone(&self) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                fd: self.fd.try_clone()?,
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported("clone pty io"))
+        }
+    }
+
+    /// Reads bytes from this PTY endpoint.
+    pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        {
+            backend::read(self.fd.as_fd(), buffer)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = buffer;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pty I/O is unsupported on this platform",
+            ))
+        }
+    }
+
+    /// Writes all bytes to this PTY endpoint.
+    pub fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            backend::write_all(self.fd.as_fd(), bytes)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = bytes;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pty I/O is unsupported on this platform",
+            ))
+        }
+    }
+
+    /// Makes the PTY endpoint nonblocking.
+    pub fn set_nonblocking(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            backend::set_nonblocking(self.fd.as_fd())
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "pty I/O is unsupported on this platform",
+            ))
+        }
+    }
+
+    /// Returns a borrowed Unix descriptor for integration points that still
+    /// require `AsyncFd`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+#[cfg(unix)]
+impl AsFd for PtyIo {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
+    }
+}
+
+#[cfg(unix)]
+impl AsRawFd for PtyIo {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
+/// The master handle of a pseudoterminal.
+#[derive(Debug)]
+pub struct PtyMaster {
+    io: PtyIo,
+}
+
 impl PtyMaster {
+    #[cfg(unix)]
+    pub(crate) fn new(fd: OwnedFd) -> Self {
+        Self { io: PtyIo::new(fd) }
+    }
+
     /// Queries the current terminal geometry for this PTY.
     pub fn size(&self) -> Result<TerminalSize> {
-        backend::query_size(self.as_fd())
+        self.io.size()
     }
 
     /// Resizes this PTY.
     pub fn resize(&self, size: TerminalSize) -> Result<()> {
-        backend::apply_size(self.as_fd(), size)
+        self.io.resize(size)
     }
 
-    /// Duplicates the master file descriptor.
+    /// Duplicates the master handle.
     pub fn try_clone(&self) -> Result<Self> {
         Ok(Self {
-            fd: self.fd.try_clone()?,
+            io: self.io.try_clone()?,
         })
     }
 
-    /// Consumes the wrapper and returns the owned file descriptor.
+    /// Duplicates the master handle as an I/O endpoint.
+    pub fn try_clone_io(&self) -> Result<PtyIo> {
+        self.io.try_clone()
+    }
+
+    /// Consumes this master handle into its I/O endpoint.
     #[must_use]
-    pub fn into_owned_fd(self) -> OwnedFd {
-        self.fd
-    }
-}
-
-impl AsFd for PtyMaster {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
-    }
-}
-
-/// The slave endpoint of a pseudoterminal.
-#[derive(Debug)]
-pub struct PtySlave {
-    fd: OwnedFd,
-}
-
-impl PtySlave {
-    /// Queries the current terminal geometry for this PTY.
-    pub fn size(&self) -> Result<TerminalSize> {
-        backend::query_size(self.as_fd())
+    pub fn into_io(self) -> PtyIo {
+        self.io
     }
 
-    /// Duplicates the slave file descriptor.
-    pub fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            fd: self.fd.try_clone()?,
-        })
-    }
-
-    /// Consumes the wrapper and returns the owned file descriptor.
+    /// Returns the PTY I/O endpoint.
     #[must_use]
-    pub fn into_owned_fd(self) -> OwnedFd {
-        self.fd
+    pub fn io(&self) -> &PtyIo {
+        &self.io
+    }
+
+    /// Writes all bytes to the PTY master.
+    pub fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
+        self.io.write_all(bytes)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn raw_fd(&self) -> RawFd {
+        self.io.raw_fd()
     }
 }
 
-impl AsFd for PtySlave {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
-    }
-}
-
-/// A freshly allocated PTY master/slave pair.
+/// A freshly allocated PTY pair.
 #[derive(Debug)]
 pub struct PtyPair {
     master: PtyMaster,
+    #[cfg(unix)]
     slave: PtySlave,
 }
 
 impl PtyPair {
     /// Allocates a PTY pair using the platform backend.
     pub fn open() -> Result<Self> {
-        let (master, slave) = backend::open_pty_pair()?;
+        #[cfg(unix)]
+        {
+            let (master, slave) = backend::open_pty_pair()?;
 
-        Ok(Self {
-            master: PtyMaster { fd: master },
-            slave: PtySlave { fd: slave },
-        })
+            Ok(Self {
+                master: PtyMaster::new(master),
+                slave: PtySlave { fd: slave },
+            })
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported("open pty pair"))
+        }
     }
 
     /// Allocates a PTY pair and applies an initial window size.
@@ -102,15 +258,15 @@ impl PtyPair {
         &self.master
     }
 
-    /// Returns the slave endpoint.
-    #[must_use]
-    pub fn slave(&self) -> &PtySlave {
-        &self.slave
+    #[cfg(unix)]
+    #[cfg(unix)]
+    pub(crate) fn into_split(self) -> (PtyMaster, PtySlave) {
+        (self.master, self.slave)
     }
 
-    /// Consumes the pair and returns the two endpoints.
+    /// Consumes the pair and returns the master endpoint.
     #[must_use]
-    pub fn into_split(self) -> (PtyMaster, PtySlave) {
-        (self.master, self.slave)
+    pub fn into_master(self) -> PtyMaster {
+        self.master
     }
 }

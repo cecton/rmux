@@ -1,7 +1,7 @@
 use rmux_proto::{AttachFrameDecoder, AttachMessage};
+use rmux_pty::PtyIo;
 use std::collections::VecDeque;
 use std::io;
-use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::unix::AsyncFd;
@@ -387,7 +387,7 @@ pub(crate) async fn forward_attach(
 async fn process_socket_messages(
     decoder: &mut AttachFrameDecoder,
     stream: &UnixStream,
-    _pane_writer: &AsyncFd<OwnedFd>,
+    _pane_writer: &AsyncFd<PtyIo>,
     live_input: &LiveAttachInputContext,
     pending_input: &mut Vec<u8>,
     locked: &mut bool,

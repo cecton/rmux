@@ -1,11 +1,15 @@
+use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
 
-use rustix::process::{getpid, ioctl_tiocsctty, kill_process_group, setsid, Pid};
+use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+use rustix::process::{
+    getpid, ioctl_tiocsctty, kill_process as rustix_kill_process, kill_process_group, setsid,
+};
 use rustix::termios::{tcgetwinsize, tcsetpgrp, tcsetwinsize};
 
-use crate::{Result, Signal, TerminalSize};
+use crate::{size, ProcessId, Result, Signal, TerminalSize};
 
 pub(crate) fn open_pty_pair() -> Result<(OwnedFd, OwnedFd)> {
     let mut master = MaybeUninit::<libc::c_int>::uninit();
@@ -39,11 +43,11 @@ pub(crate) fn open_pty_pair() -> Result<(OwnedFd, OwnedFd)> {
 }
 
 pub(crate) fn query_size(fd: BorrowedFd<'_>) -> Result<TerminalSize> {
-    Ok(TerminalSize::from_winsize(tcgetwinsize(fd)?))
+    Ok(size::from_winsize(tcgetwinsize(fd)?))
 }
 
 pub(crate) fn apply_size(fd: BorrowedFd<'_>, size: TerminalSize) -> Result<()> {
-    tcsetwinsize(fd, size.into_winsize())?;
+    tcsetwinsize(fd, size::into_winsize(size))?;
     Ok(())
 }
 
@@ -63,8 +67,36 @@ pub(crate) fn setup_child_controlling_terminal(raw_master_fd: RawFd) -> std::io:
     Ok(())
 }
 
-pub(crate) fn kill_foreground_process_group(pid: Pid, signal: Signal) -> Result<()> {
-    kill_process_group(pid, signal)?;
+pub(crate) fn kill_foreground_process_group(pid: ProcessId, signal: Signal) -> Result<()> {
+    kill_process_group(pid.as_rustix_pid()?, signal.as_rustix_signal())?;
+    Ok(())
+}
+
+pub(crate) fn kill_process(pid: ProcessId, signal: Signal) -> Result<()> {
+    rustix_kill_process(pid.as_rustix_pid()?, signal.as_rustix_signal())?;
+    Ok(())
+}
+
+pub(crate) fn read(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
+    rustix::io::read(fd, buffer).map_err(io::Error::from)
+}
+
+pub(crate) fn write_all(fd: BorrowedFd<'_>, mut buffer: &[u8]) -> io::Result<()> {
+    while !buffer.is_empty() {
+        match rustix::io::write(fd, buffer) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0")),
+            Ok(bytes_written) => buffer = &buffer[bytes_written..],
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn set_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
+    let flags = fcntl_getfl(fd).map_err(io::Error::other)?;
+    fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(io::Error::other)?;
     Ok(())
 }
 

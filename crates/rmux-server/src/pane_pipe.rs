@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::os::fd::AsFd;
 use std::process::Stdio;
 
 use rmux_core::PaneId;
@@ -10,7 +9,7 @@ use tokio::process::Command;
 use tokio::sync::{broadcast, watch};
 
 use crate::pane_io::PaneOutputSender;
-use crate::terminal::{write_all_to_fd, TerminalProfile};
+use crate::terminal::TerminalProfile;
 
 #[derive(Default)]
 pub(crate) struct PanePipeStore {
@@ -348,7 +347,7 @@ async fn forward_pipe_output_to_pane<R>(
                 match read {
                     Ok(0) | Err(_) => break,
                     Ok(size) => {
-                        if write_all_to_fd(pane_master.as_fd(), &buffer[..size]).is_err() {
+                        if pane_master.write_all(&buffer[..size]).is_err() {
                             break;
                         }
                     }

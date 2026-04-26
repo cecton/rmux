@@ -1,5 +1,4 @@
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::ExitStatusExt;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -7,13 +6,12 @@ use std::time::Duration;
 use rmux_core::input::InputParser;
 use rmux_core::{GridRenderOptions, Screen, ScreenCaptureRange};
 use rmux_proto::{RmuxError, TerminalSize};
-use rmux_pty::{ChildCommand, PtyChild, Signal, TerminalSize as PtyTerminalSize};
-use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+use rmux_pty::{ChildCommand, PtyChild, PtyIo, Signal, TerminalSize as PtyTerminalSize};
 use rustix::termios::{tcsetwinsize, Winsize};
 use tokio::io::unix::AsyncFd;
 use tokio::time::sleep;
 
-use crate::terminal::{parse_environment_assignments, write_all_to_fd, TerminalProfile};
+use crate::terminal::{parse_environment_assignments, TerminalProfile};
 
 use super::super::RequestHandler;
 
@@ -66,14 +64,14 @@ impl PopupSurface {
 
 #[derive(Debug, Clone)]
 pub(in super::super) struct PopupJob {
-    writer: Arc<StdMutex<OwnedFd>>,
+    writer: Arc<StdMutex<PtyIo>>,
     child: Arc<StdMutex<Option<PtyChild>>>,
 }
 
 impl PopupJob {
     pub(super) fn write(&self, bytes: &[u8]) -> io::Result<()> {
         let writer = self.writer.lock().expect("popup writer");
-        write_all_to_fd(writer.as_fd(), bytes)
+        writer.write_all(bytes)
     }
 
     pub(super) fn resize(&self, size: TerminalSize) -> io::Result<()> {
@@ -129,8 +127,9 @@ pub(super) fn spawn_popup_job(
         .spawn()
         .map_err(|error| RmuxError::Server(format!("failed to spawn popup process: {error}")))?;
     let (master, child) = spawned.into_parts();
-    let writer_fd = master.into_owned_fd();
-    make_nonblocking(&writer_fd)
+    let writer_fd = master.into_io();
+    writer_fd
+        .set_nonblocking()
         .map_err(|error| RmuxError::Server(format!("failed to prepare popup pty: {error}")))?;
     Ok((
         PopupJob {
@@ -151,11 +150,11 @@ impl RequestHandler {
     ) -> Result<(), RmuxError> {
         let reader_fd = {
             let writer = job.writer.lock().expect("popup writer");
-            rustix::io::dup(writer.as_fd()).map_err(|error| {
+            writer.try_clone().map_err(|error| {
                 RmuxError::Server(format!("failed to clone popup pty fd: {error}"))
             })?
         };
-        make_nonblocking(&reader_fd).map_err(|error| {
+        reader_fd.set_nonblocking().map_err(|error| {
             RmuxError::Server(format!("failed to make popup pty nonblocking: {error}"))
         })?;
         let reader = AsyncFd::new(reader_fd)
@@ -215,19 +214,12 @@ fn status_to_code(status: std::process::ExitStatus) -> Option<i32> {
     status.code().or_else(|| status.signal())
 }
 
-async fn read_async_fd(fd: &AsyncFd<OwnedFd>, buffer: &mut [u8]) -> io::Result<usize> {
+async fn read_async_fd(fd: &AsyncFd<PtyIo>, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         let mut ready = fd.readable().await?;
-        match ready.try_io(|inner| {
-            rustix::io::read(inner.get_ref(), &mut *buffer).map_err(io::Error::from)
-        }) {
+        match ready.try_io(|inner| inner.get_ref().read(&mut *buffer)) {
             Ok(result) => return result,
             Err(_would_block) => continue,
         }
     }
-}
-
-fn make_nonblocking(fd: &OwnedFd) -> io::Result<()> {
-    let flags = fcntl_getfl(fd).map_err(io::Error::other)?;
-    fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(io::Error::other)
 }

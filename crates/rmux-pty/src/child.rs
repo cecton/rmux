@@ -1,16 +1,22 @@
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::fs::File;
-use std::os::fd::{AsFd, AsRawFd};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::process::{Child, Command, Stdio};
 
-use rustix::process::{kill_process, Pid};
-
-use crate::{backend, PtyError, PtyMaster, PtyPair, Result, Signal, TerminalSize};
+#[cfg(not(unix))]
+use crate::PtyError;
+#[cfg(unix)]
+use crate::{backend, PtyPair};
+use crate::{ProcessId, PtyMaster, Result, Signal, TerminalSize};
 
 /// A command configuration for spawning a process inside a newly allocated PTY.
 #[derive(Clone, Debug)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub struct ChildCommand {
     program: PathBuf,
     arg0: Option<OsString>,
@@ -131,8 +137,9 @@ impl SpawnedPty {
 /// A handle for signaling and reaping a PTY-backed child process.
 #[derive(Debug)]
 pub struct PtyChild {
+    #[cfg(unix)]
     child: Child,
-    pid: Pid,
+    pid: ProcessId,
 }
 
 impl PtyChild {
@@ -142,18 +149,44 @@ impl PtyChild {
     /// so this PID is also the PTY process-group identifier used for later
     /// signal delivery.
     #[must_use]
-    pub fn pid(&self) -> Pid {
+    pub fn pid(&self) -> ProcessId {
         self.pid
     }
 
     /// Waits for the child process to exit and reaps it.
     pub fn wait(&mut self) -> Result<ExitStatus> {
-        Ok(self.child.wait()?)
+        #[cfg(unix)]
+        {
+            Ok(self.child.wait()?)
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported("wait for pty child"))
+        }
     }
 
     /// Attempts to reap the child process without blocking.
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
-        Ok(self.child.try_wait()?)
+        #[cfg(unix)]
+        {
+            Ok(self.child.try_wait()?)
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported("try wait for pty child"))
+        }
+    }
+
+    /// Sends an interrupt request to the PTY foreground process group.
+    pub fn interrupt(&self) -> Result<()> {
+        self.kill(Signal::INT)
+    }
+
+    /// Sends a forceful kill request to the PTY foreground process group.
+    pub fn terminate_forcefully(&self) -> Result<()> {
+        self.kill(Signal::KILL)
     }
 
     /// Sends a signal to the PTY foreground process group.
@@ -163,7 +196,16 @@ impl PtyChild {
     /// preserves teardown correctness even when the session leader has already
     /// delegated work to descendants.
     pub fn kill(&self, signal: Signal) -> Result<()> {
-        backend::kill_foreground_process_group(self.pid, signal)
+        #[cfg(unix)]
+        {
+            backend::kill_foreground_process_group(self.pid, signal)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            Err(PtyError::Unsupported("signal pty foreground process group"))
+        }
     }
 
     /// Sends a signal directly to the PTY session leader.
@@ -172,18 +214,28 @@ impl PtyChild {
     /// different process group while the session leader is still the child that
     /// must be reaped by RMUX.
     pub fn kill_session_leader(&self, signal: Signal) -> Result<()> {
-        kill_process(self.pid, signal)?;
-        Ok(())
+        #[cfg(unix)]
+        {
+            backend::kill_process(self.pid, signal)?;
+            Ok(())
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = signal;
+            Err(PtyError::Unsupported("signal pty session leader"))
+        }
     }
 }
 
+#[cfg(unix)]
 fn spawn_child(command: ChildCommand) -> Result<SpawnedPty> {
     let pair = match command.size {
         Some(size) => PtyPair::open_with_size(size)?,
         None => PtyPair::open()?,
     };
     let (master, slave) = pair.into_split();
-    let raw_master_fd = master.as_fd().as_raw_fd();
+    let raw_master_fd = master.raw_fd();
 
     let stdin = File::from(slave.try_clone()?.into_owned_fd());
     let stdout = File::from(slave.try_clone()?.into_owned_fd());
@@ -220,12 +272,15 @@ fn spawn_child(command: ChildCommand) -> Result<SpawnedPty> {
     }
 
     let child = std_command.spawn()?;
-    let pid =
-        Pid::from_raw(i32::try_from(child.id()).map_err(|_| PtyError::InvalidPid(child.id()))?)
-            .ok_or(PtyError::InvalidPid(child.id()))?;
+    let pid = ProcessId::new(child.id())?;
 
     Ok(SpawnedPty {
         master,
         child: PtyChild { child, pid },
     })
+}
+
+#[cfg(not(unix))]
+fn spawn_child(_command: ChildCommand) -> Result<SpawnedPty> {
+    Err(PtyError::Unsupported("spawn pty child"))
 }

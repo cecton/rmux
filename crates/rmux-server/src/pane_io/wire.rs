@@ -1,10 +1,8 @@
 use std::future::pending;
 use std::io;
-use std::os::fd::OwnedFd;
 
 use rmux_proto::{encode_attach_message, AttachFrameDecoder, AttachMessage};
-use rmux_pty::PtyMaster;
-use rustix::fs::{fcntl_getfl, fcntl_setfl, OFlags};
+use rmux_pty::{PtyIo, PtyMaster};
 use tokio::io::unix::AsyncFd;
 use tokio::net::UnixStream;
 use tokio::sync::broadcast;
@@ -37,9 +35,9 @@ pub(super) fn open_attach_target(target: AttachTarget) -> io::Result<OpenAttachT
     })
 }
 
-pub(super) fn open_pane_writer(pane_master: PtyMaster) -> io::Result<AsyncFd<OwnedFd>> {
-    let pane_writer = pane_master.into_owned_fd();
-    make_nonblocking(&pane_writer)?;
+pub(super) fn open_pane_writer(pane_master: PtyMaster) -> io::Result<AsyncFd<PtyIo>> {
+    let pane_writer = pane_master.into_io();
+    pane_writer.set_nonblocking()?;
 
     AsyncFd::new(pane_writer)
 }
@@ -181,14 +179,12 @@ pub(super) async fn emit_exited_message(stream: &UnixStream) -> io::Result<()> {
 }
 
 pub(super) async fn read_from_pane(
-    pane_reader: &AsyncFd<OwnedFd>,
+    pane_reader: &AsyncFd<PtyIo>,
     buffer: &mut [u8],
 ) -> io::Result<usize> {
     loop {
         let mut ready = pane_reader.readable().await?;
-        match ready.try_io(|inner| {
-            rustix::io::read(inner.get_ref(), &mut *buffer).map_err(io::Error::from)
-        }) {
+        match ready.try_io(|inner| inner.get_ref().read(&mut *buffer)) {
             Ok(Ok(bytes_read)) => return Ok(bytes_read),
             Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
             Ok(Err(error))
@@ -233,9 +229,4 @@ async fn write_all_to_stream(stream: &UnixStream, mut bytes: &[u8]) -> io::Resul
 
 pub(super) fn invalid_attach_message(error: rmux_proto::RmuxError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-fn make_nonblocking(fd: &OwnedFd) -> io::Result<()> {
-    let flags = fcntl_getfl(fd).map_err(io::Error::other)?;
-    fcntl_setfl(fd, flags | OFlags::NONBLOCK).map_err(io::Error::other)
 }

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 #[cfg(target_os = "linux")]
 use std::fs;
 use std::fs::File;
@@ -8,7 +10,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rmux_pty::{ChildCommand, PtyPair, Signal, TerminalSize};
+use rmux_pty::{ChildCommand, ProcessId, PtyPair, Signal, TerminalSize};
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Eq, PartialEq)]
@@ -23,7 +25,8 @@ fn read_exact_from_master(
     master: &rmux_pty::PtyMaster,
     len: usize,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut file = File::from(master.try_clone()?.into_owned_fd());
+    let io = master.try_clone_io()?;
+    let mut file = File::from(io.as_fd().try_clone_to_owned()?);
     let mut buffer = vec![0_u8; len];
     file.read_exact(&mut buffer)?;
     Ok(buffer)
@@ -32,7 +35,8 @@ fn read_exact_from_master(
 fn read_line_from_master(
     master: &rmux_pty::PtyMaster,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let file = File::from(master.try_clone()?.into_owned_fd());
+    let io = master.try_clone_io()?;
+    let file = File::from(io.as_fd().try_clone_to_owned()?);
     let mut reader = BufReader::new(file);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -40,12 +44,12 @@ fn read_line_from_master(
 }
 
 #[cfg(target_os = "linux")]
-fn pid_raw(pid: rustix::process::Pid) -> i32 {
-    pid.as_raw_pid()
+fn pid_raw(pid: ProcessId) -> i32 {
+    i32::try_from(pid.as_u32()).expect("test pid must fit in i32")
 }
 
 #[cfg(target_os = "linux")]
-fn read_process_stat(pid: rustix::process::Pid) -> Result<ProcessStat, Box<dyn std::error::Error>> {
+fn read_process_stat(pid: ProcessId) -> Result<ProcessStat, Box<dyn std::error::Error>> {
     let stat_path = format!("/proc/{}/stat", pid_raw(pid));
     let stat = fs::read_to_string(stat_path)?;
     let command_end = stat
@@ -74,12 +78,12 @@ fn read_process_stat(pid: rustix::process::Pid) -> Result<ProcessStat, Box<dyn s
 }
 
 #[cfg(target_os = "linux")]
-fn child_fd_path(pid: rustix::process::Pid, fd: u8) -> PathBuf {
+fn child_fd_path(pid: ProcessId, fd: u8) -> PathBuf {
     format!("/proc/{}/fd/{fd}", pid_raw(pid)).into()
 }
 
 #[cfg(target_os = "linux")]
-fn process_exists(pid: rustix::process::Pid) -> bool {
+fn process_exists(pid: ProcessId) -> bool {
     fs::metadata(format!("/proc/{}", pid_raw(pid))).is_ok()
 }
 
@@ -109,8 +113,6 @@ fn allocated_pair_round_trips_resized_terminal_size() -> Result<(), Box<dyn std:
 
     pair.master().resize(TerminalSize::new(200, 50))?;
     assert_eq!(pair.master().size()?, TerminalSize::new(200, 50));
-    assert_eq!(pair.slave().size()?, TerminalSize::new(200, 50));
-
     Ok(())
 }
 
@@ -171,7 +173,8 @@ fn spawned_child_reads_and_writes_through_master() -> Result<(), Box<dyn std::er
     assert_eq!(read_exact_from_master(spawned.master(), 5)?, b"READY");
 
     let payload = b"hello over pty";
-    let mut writer = File::from(spawned.master().try_clone()?.into_owned_fd());
+    let writer_io = spawned.master().try_clone_io()?;
+    let mut writer = File::from(writer_io.as_fd().try_clone_to_owned()?);
     writer.write_all(payload)?;
     writer.flush()?;
 
@@ -203,8 +206,7 @@ fn kill_terminates_the_pty_process_group() -> Result<(), Box<dyn std::error::Err
     let descendant_pid = read_line_from_master(spawned.master())?
         .trim()
         .parse::<i32>()?;
-    let descendant_pid = rustix::process::Pid::from_raw(descendant_pid)
-        .ok_or_else(|| "helper shell returned pid 0".to_string())?;
+    let descendant_pid = ProcessId::new(u32::try_from(descendant_pid)?)?;
     let descendant_stat = read_process_stat(descendant_pid)?;
 
     assert_eq!(descendant_stat.pgrp, pid_raw(spawned.child().pid()));

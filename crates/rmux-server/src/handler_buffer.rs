@@ -1,6 +1,5 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,7 +14,6 @@ use super::RequestHandler;
 use crate::outer_terminal::OuterTerminal;
 use crate::pane_io::AttachControl;
 use crate::pane_terminals::{session_not_found, PaneCaptureRequest};
-use crate::terminal::write_all_to_fd;
 
 #[path = "handler_buffer/list.rs"]
 mod list;
@@ -573,11 +571,11 @@ fn write_paste_payload(
     bracketed: bool,
 ) -> io::Result<()> {
     if bracketed {
-        write_all_to_fd(master.as_fd(), b"\x1b[200~")?;
+        master.write_all(b"\x1b[200~")?;
     }
-    write_all_to_fd(master.as_fd(), payload)?;
+    master.write_all(payload)?;
     if bracketed {
-        write_all_to_fd(master.as_fd(), b"\x1b[201~")?;
+        master.write_all(b"\x1b[201~")?;
     }
     Ok(())
 }
