@@ -592,9 +592,9 @@ mod tests {
 mod tests {
     use super::{DaemonConfig, ServerDaemon};
     use rmux_proto::{
-        encode_frame, ErrorResponse, FrameDecoder, KillServerRequest, ListClientsRequest,
-        ListPanesRequest, ListSessionsRequest, ListWindowsRequest, LockServerRequest, Request,
-        Response, RmuxError, SessionName,
+        encode_frame, ErrorResponse, FrameDecoder, HasSessionRequest, KillServerRequest,
+        KillSessionRequest, ListClientsRequest, ListPanesRequest, ListSessionsRequest,
+        ListWindowsRequest, LockServerRequest, Request, Response, RmuxError, SessionName,
     };
     use std::io::{self, Read, Write};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -650,6 +650,50 @@ mod tests {
 
         assert!(matches!(response, Response::KillServer(_)));
         handle.wait().await
+    }
+
+    #[tokio::test]
+    async fn windows_daemon_empty_session_requests_match_unix_semantics() -> io::Result<()> {
+        let endpoint = unique_endpoint()?;
+        let socket_path = endpoint.clone().into_path();
+        let handle = ServerDaemon::new(DaemonConfig::new(socket_path))
+            .bind()
+            .await?;
+        let target = SessionName::new("missing").expect("valid session");
+
+        let (has_session, kill_session) = tokio::task::spawn_blocking(move || {
+            let has_session = roundtrip(
+                &endpoint,
+                Request::HasSession(HasSessionRequest {
+                    target: target.clone(),
+                }),
+            )?;
+            let kill_session = roundtrip(
+                &endpoint,
+                Request::KillSession(KillSessionRequest {
+                    target,
+                    kill_all_except_target: false,
+                    clear_alerts: false,
+                }),
+            )?;
+
+            Ok::<_, io::Error>((has_session, kill_session))
+        })
+        .await
+        .map_err(io::Error::other)??;
+
+        assert!(matches!(
+            has_session,
+            Response::HasSession(rmux_proto::HasSessionResponse { exists: false })
+        ));
+        assert!(matches!(
+            kill_session,
+            Response::Error(ErrorResponse {
+                error: RmuxError::SessionNotFound(name)
+            }) if name == "missing"
+        ));
+
+        handle.shutdown().await
     }
 
     #[tokio::test]

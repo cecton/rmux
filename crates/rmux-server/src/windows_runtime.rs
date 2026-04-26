@@ -4,8 +4,9 @@ use std::io;
 
 use rmux_ipc::{LocalListener, LocalStream};
 use rmux_proto::{
-    encode_frame, CommandOutput, ErrorResponse, FrameDecoder, ListClientsResponse,
-    ListPanesResponse, ListSessionsResponse, ListWindowsResponse, Request, Response, RmuxError,
+    encode_frame, CommandOutput, ErrorResponse, FrameDecoder, HasSessionResponse,
+    ListClientsResponse, ListPanesResponse, ListSessionsResponse, ListWindowsResponse, Request,
+    Response, RmuxError,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
@@ -64,6 +65,10 @@ async fn serve_connection(stream: LocalStream, shutdown_handle: ShutdownHandle) 
 fn dispatch_minimal_windows_request(request: Request) -> Response {
     match request {
         Request::KillServer(_) => Response::KillServer(rmux_proto::KillServerResponse),
+        Request::HasSession(_) => Response::HasSession(HasSessionResponse { exists: false }),
+        Request::KillSession(request) => Response::Error(ErrorResponse {
+            error: RmuxError::SessionNotFound(request.target.to_string()),
+        }),
         Request::ListSessions(_) => Response::ListSessions(ListSessionsResponse {
             output: empty_output(),
         }),
