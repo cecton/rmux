@@ -273,6 +273,11 @@ impl PtyMaster {
     pub(crate) fn raw_fd(&self) -> RawFd {
         self.io.raw_fd()
     }
+
+    #[cfg(windows)]
+    pub(crate) fn windows_pty(&self) -> Arc<backend::WindowsPty> {
+        Arc::clone(&self.io.pty)
+    }
 }
 
 /// A freshly allocated PTY pair.

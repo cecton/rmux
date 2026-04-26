@@ -163,7 +163,7 @@ impl From<NulError> for PtyError {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     #[test]
     fn unsupported_backend_returns_explicit_errors() {
         use super::{ChildCommand, PtyError};

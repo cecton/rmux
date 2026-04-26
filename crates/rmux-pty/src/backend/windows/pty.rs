@@ -20,6 +20,10 @@ pub(crate) struct WindowsPty {
 }
 
 impl WindowsPty {
+    pub(crate) fn hpc(&self) -> HPCON {
+        self.hpc.raw()
+    }
+
     pub(crate) fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         super::io::read(&self.output_read, buffer)
     }

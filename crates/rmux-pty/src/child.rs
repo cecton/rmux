@@ -8,9 +8,9 @@ use std::process::ExitStatus;
 #[cfg(unix)]
 use std::process::{Child, Command, Stdio};
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 use crate::PtyError;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::{backend, PtyPair};
 use crate::{ProcessId, PtyMaster, Result, Signal, TerminalSize};
 
@@ -18,13 +18,13 @@ use crate::{ProcessId, PtyMaster, Result, Signal, TerminalSize};
 #[derive(Clone, Debug)]
 #[cfg_attr(not(unix), allow(dead_code))]
 pub struct ChildCommand {
-    program: PathBuf,
-    arg0: Option<OsString>,
-    args: Vec<OsString>,
-    env: Vec<(OsString, OsString)>,
-    clear_env: bool,
-    current_dir: Option<PathBuf>,
-    size: Option<TerminalSize>,
+    pub(crate) program: PathBuf,
+    pub(crate) arg0: Option<OsString>,
+    pub(crate) args: Vec<OsString>,
+    pub(crate) env: Vec<(OsString, OsString)>,
+    pub(crate) clear_env: bool,
+    pub(crate) current_dir: Option<PathBuf>,
+    pub(crate) size: Option<TerminalSize>,
 }
 
 impl ChildCommand {
@@ -139,6 +139,8 @@ impl SpawnedPty {
 pub struct PtyChild {
     #[cfg(unix)]
     child: Child,
+    #[cfg(windows)]
+    child: backend::WindowsChild,
     pid: ProcessId,
 }
 
@@ -162,7 +164,15 @@ impl PtyChild {
 
         #[cfg(not(unix))]
         {
-            Err(PtyError::Unsupported("wait for pty child"))
+            #[cfg(windows)]
+            {
+                backend::wait_child(&mut self.child)
+            }
+
+            #[cfg(not(windows))]
+            {
+                Err(PtyError::Unsupported("wait for pty child"))
+            }
         }
     }
 
@@ -175,7 +185,15 @@ impl PtyChild {
 
         #[cfg(not(unix))]
         {
-            Err(PtyError::Unsupported("try wait for pty child"))
+            #[cfg(windows)]
+            {
+                backend::try_wait_child(&mut self.child)
+            }
+
+            #[cfg(not(windows))]
+            {
+                Err(PtyError::Unsupported("try wait for pty child"))
+            }
         }
     }
 
@@ -203,8 +221,16 @@ impl PtyChild {
 
         #[cfg(not(unix))]
         {
-            let _ = signal;
-            Err(PtyError::Unsupported("signal pty foreground process group"))
+            #[cfg(windows)]
+            {
+                backend::kill_child(&self.child, signal)
+            }
+
+            #[cfg(not(windows))]
+            {
+                let _ = signal;
+                Err(PtyError::Unsupported("signal pty foreground process group"))
+            }
         }
     }
 
@@ -222,8 +248,16 @@ impl PtyChild {
 
         #[cfg(not(unix))]
         {
-            let _ = signal;
-            Err(PtyError::Unsupported("signal pty session leader"))
+            #[cfg(windows)]
+            {
+                backend::kill_child(&self.child, signal)
+            }
+
+            #[cfg(not(windows))]
+            {
+                let _ = signal;
+                Err(PtyError::Unsupported("signal pty session leader"))
+            }
         }
     }
 }
@@ -282,5 +316,23 @@ fn spawn_child(command: ChildCommand) -> Result<SpawnedPty> {
 
 #[cfg(not(unix))]
 fn spawn_child(_command: ChildCommand) -> Result<SpawnedPty> {
-    Err(PtyError::Unsupported("spawn pty child"))
+    #[cfg(windows)]
+    {
+        let pair = match _command.size {
+            Some(size) => PtyPair::open_with_size(size)?,
+            None => PtyPair::open()?,
+        };
+        let master = pair.into_master();
+        let child = backend::spawn_child(_command, master.windows_pty())?;
+        let pid = child.pid();
+        Ok(SpawnedPty {
+            master,
+            child: PtyChild { child, pid },
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err(PtyError::Unsupported("spawn pty child"))
+    }
 }
