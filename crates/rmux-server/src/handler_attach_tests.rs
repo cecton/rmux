@@ -6,7 +6,8 @@ use crate::pane_io::AttachControl;
 use crate::server_access::current_owner_uid;
 use rmux_core::{input::InputParser, Screen};
 use rmux_proto::request::{
-    AttachSessionExt2Request, AttachSessionExtRequest, SwitchClientExt2Request,
+    AttachSessionExt2Request, AttachSessionExtRequest, NewSessionExtRequest,
+    SwitchClientExt2Request,
 };
 use rmux_proto::{
     AttachSessionResponse, AttachedKeystroke, CapturePaneRequest, CopyModeRequest,
@@ -28,12 +29,22 @@ fn session_name(value: &str) -> SessionName {
     SessionName::new(value).expect("valid session name")
 }
 
+#[cfg(unix)]
 fn default_shell_window_name() -> String {
     std::env::var_os("SHELL")
         .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_owned()))
         .map(|name| name.to_string_lossy().trim_start_matches('-').to_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "sh".to_owned())
+}
+
+#[cfg(windows)]
+fn default_shell_window_name() -> String {
+    std::env::var_os("COMSPEC")
+        .and_then(|shell| Path::new(&shell).file_name().map(|name| name.to_owned()))
+        .map(|name| name.to_string_lossy().trim_start_matches('-').to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "cmd.exe".to_owned())
 }
 
 fn default_shell_pane_status() -> String {
@@ -85,6 +96,67 @@ async fn create_attached_session(
         .register_attach(requester_pid, session.clone(), control_tx)
         .await;
     control_rx
+}
+
+async fn create_quiet_attached_session(
+    handler: &RequestHandler,
+    requester_pid: u32,
+    session: &SessionName,
+) -> mpsc::UnboundedReceiver<AttachControl> {
+    let response = handler
+        .handle(Request::NewSessionExt(NewSessionExtRequest {
+            session_name: Some(session.clone()),
+            working_directory: None,
+            detached: true,
+            size: Some(TerminalSize { cols: 80, rows: 24 }),
+            environment: None,
+            group_target: None,
+            attach_if_exists: false,
+            detach_other_clients: false,
+            kill_other_clients: false,
+            flags: None,
+            window_name: None,
+            print_session_info: false,
+            print_format: None,
+            command: Some(quiet_attached_command()),
+        }))
+        .await;
+    assert!(
+        matches!(response, Response::NewSession(_)),
+        "quiet test session should be created, got {response:?}"
+    );
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    handler
+        .register_attach(requester_pid, session.clone(), control_tx)
+        .await;
+    control_rx
+}
+
+#[cfg(windows)]
+fn quiet_attached_command() -> Vec<String> {
+    let system_root =
+        std::env::var_os("SystemRoot").unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows"));
+    let powershell = std::path::PathBuf::from(system_root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    vec![
+        powershell.to_string_lossy().into_owned(),
+        "-NoLogo".to_owned(),
+        "-NoProfile".to_owned(),
+        "-NonInteractive".to_owned(),
+        "-Command".to_owned(),
+        "Start-Sleep -Seconds 60".to_owned(),
+    ]
+}
+
+#[cfg(unix)]
+fn quiet_attached_command() -> Vec<String> {
+    ["/bin/sh", "-c", "sleep 60"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 async fn active_panes(handler: &RequestHandler, session: &SessionName) -> String {

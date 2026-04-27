@@ -7,7 +7,6 @@ use rmux_core::{
     AlertFlags, BufferStore, EnvironmentStore, OptionStore, Pane, Session, SessionStore, Window,
     WINLINK_ACTIVITY, WINLINK_BELL, WINLINK_SILENCE,
 };
-#[cfg(unix)]
 use rmux_proto::OptionName;
 use rmux_proto::{SessionName, TerminalSize};
 
@@ -301,7 +300,6 @@ impl<'a> RuntimeFormatContext<'a> {
             .map(|_| bool_string(self.window_alert_flags().contains(flag)))
     }
 
-    #[cfg(unix)]
     fn pane_history_size(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
@@ -309,12 +307,6 @@ impl<'a> RuntimeFormatContext<'a> {
         Some(stats.size.to_string())
     }
 
-    #[cfg(windows)]
-    fn pane_history_size(&self) -> Option<String> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_history_limit(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
@@ -322,12 +314,6 @@ impl<'a> RuntimeFormatContext<'a> {
         Some(stats.limit.to_string())
     }
 
-    #[cfg(windows)]
-    fn pane_history_limit(&self) -> Option<String> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_history_bytes(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
@@ -335,12 +321,6 @@ impl<'a> RuntimeFormatContext<'a> {
         Some(stats.bytes.to_string())
     }
 
-    #[cfg(windows)]
-    fn pane_history_bytes(&self) -> Option<String> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_cursor_position(&self) -> Option<(u32, u32)> {
         let session = self.session?;
         let pane = self.pane?;
@@ -350,12 +330,6 @@ impl<'a> RuntimeFormatContext<'a> {
             .map(|screen| screen.cursor_position())
     }
 
-    #[cfg(windows)]
-    fn pane_cursor_position(&self) -> Option<(u32, u32)> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_screen_mode(&self) -> Option<u32> {
         let session = self.session?;
         let pane = self.pane?;
@@ -366,12 +340,6 @@ impl<'a> RuntimeFormatContext<'a> {
         )
     }
 
-    #[cfg(windows)]
-    fn pane_screen_mode(&self) -> Option<u32> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_alternate_on(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
@@ -379,22 +347,11 @@ impl<'a> RuntimeFormatContext<'a> {
         Some(bool_string(state.alternate_on))
     }
 
-    #[cfg(windows)]
-    fn pane_alternate_on(&self) -> Option<String> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_title(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
         let state = self.state?.pane_screen_state(session.name(), pane.id())?;
         Some(state.title)
-    }
-
-    #[cfg(windows)]
-    fn pane_title(&self) -> Option<String> {
-        None
     }
 
     fn pane_screen_path(&self) -> Option<String> {
@@ -404,7 +361,6 @@ impl<'a> RuntimeFormatContext<'a> {
         path::pane_path_from_osc7(&state.path)
     }
 
-    #[cfg(unix)]
     fn automatic_window_name(&self) -> Option<String> {
         let state = self.state?;
         let session_name = self.session_name()?;
@@ -432,17 +388,11 @@ impl<'a> RuntimeFormatContext<'a> {
         (!rendered.is_empty()).then_some(rendered)
     }
 
-    #[cfg(windows)]
-    fn automatic_window_name(&self) -> Option<String> {
-        None
-    }
-
     fn window_name(&self) -> Option<String> {
         self.automatic_window_name()
             .or_else(|| self.base.format_value(FormatVariable::WindowName))
     }
 
-    #[cfg(unix)]
     fn rendered_window_name(&self, window_index: u32, window: &'a Window) -> Option<String> {
         let state = self.state?;
         let session = self.session?;
@@ -467,11 +417,6 @@ impl<'a> RuntimeFormatContext<'a> {
             runtime
         };
         runtime.window_name()
-    }
-
-    #[cfg(windows)]
-    fn rendered_window_name(&self, _window_index: u32, _window: &'a Window) -> Option<String> {
-        None
     }
 
     fn pane_pid(&self) -> Option<String> {
@@ -558,7 +503,6 @@ impl<'a> RuntimeFormatContext<'a> {
             .map(|mode| bool_string(mode & bit != 0))
     }
 
-    #[cfg(unix)]
     fn pane_copy_mode_summary(&self) -> Option<crate::copy_mode::CopyModeSummary> {
         let session = self.session?;
         let pane = self.pane?;
@@ -566,23 +510,12 @@ impl<'a> RuntimeFormatContext<'a> {
             .pane_copy_mode_summary(session.name(), pane.id())
     }
 
-    #[cfg(windows)]
-    fn pane_copy_mode_summary(&self) -> Option<crate::copy_mode::CopyModeSummary> {
-        None
-    }
-
-    #[cfg(unix)]
     fn pane_mode_name(&self) -> Option<String> {
         let session = self.session?;
         let pane = self.pane?;
         self.state?
             .pane_mode_name(session.name(), pane.id())
             .map(str::to_owned)
-    }
-
-    #[cfg(windows)]
-    fn pane_mode_name(&self) -> Option<String> {
-        None
     }
 
     #[cfg(unix)]
@@ -604,7 +537,6 @@ impl<'a> RuntimeFormatContext<'a> {
         Some(bool_string(false))
     }
 
-    #[cfg(unix)]
     fn pane_in_mode(&self) -> bool {
         let Some(session) = self.session else {
             return false;
@@ -614,11 +546,6 @@ impl<'a> RuntimeFormatContext<'a> {
         };
         self.state
             .is_some_and(|state| state.pane_in_mode(session.name(), pane.id()))
-    }
-
-    #[cfg(windows)]
-    fn pane_in_mode(&self) -> bool {
-        false
     }
 
     #[cfg(unix)]

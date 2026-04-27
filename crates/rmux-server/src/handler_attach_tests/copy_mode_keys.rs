@@ -5,22 +5,13 @@ async fn attached_copy_mode_emacs_slash_is_unbound_and_not_forwarded() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let _control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let _control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
-    assert!(matches!(
-        handler
-            .handle(Request::SendKeys(SendKeysRequest {
-                target: target.clone(),
-                keys: vec!["printf 'P0-LINE-12\\n'".to_owned(), "Enter".to_owned()],
-            }))
-            .await,
-        Response::SendKeys(_)
-    ));
-    wait_for_capture_containing(
+    replace_transcript_contents(
         &handler,
-        target.clone(),
-        "P0-LINE-12",
-        "copy-mode slash test marker must be visible before entering copy-mode",
+        &target,
+        TerminalSize { cols: 80, rows: 24 },
+        b"P0-LINE-12\r\n",
     )
     .await;
     assert!(matches!(
@@ -68,22 +59,13 @@ async fn attached_copy_mode_emacs_ctrl_s_opens_search_prompt() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let _control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let _control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
-    assert!(matches!(
-        handler
-            .handle(Request::SendKeys(SendKeysRequest {
-                target: target.clone(),
-                keys: vec!["printf 'P0-LINE-12\\n'".to_owned(), "Enter".to_owned()],
-            }))
-            .await,
-        Response::SendKeys(_)
-    ));
-    wait_for_capture_containing(
+    replace_transcript_contents(
         &handler,
-        target.clone(),
-        "P0-LINE-12",
-        "copy-mode ctrl-s test marker must be visible before entering copy-mode",
+        &target,
+        TerminalSize { cols: 80, rows: 24 },
+        b"P0-LINE-12\r\n",
     )
     .await;
     assert!(matches!(
@@ -120,22 +102,13 @@ async fn attached_copy_mode_gets_first_refusal_for_search_and_selection_keys() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let _control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let _control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
-    assert!(matches!(
-        handler
-            .handle(Request::SendKeys(SendKeysRequest {
-                target: target.clone(),
-                keys: vec!["printf 'P0-LINE-12\\n'".to_owned(), "Enter".to_owned()],
-            }))
-            .await,
-        Response::SendKeys(_)
-    ));
-    wait_for_capture_containing(
+    replace_transcript_contents(
         &handler,
-        target.clone(),
-        "P0-LINE-12",
-        "copy-mode vi test marker must be visible before entering copy-mode",
+        &target,
+        TerminalSize { cols: 80, rows: 24 },
+        b"P0-LINE-12\r\n",
     )
     .await;
 
@@ -188,22 +161,13 @@ async fn attached_copy_mode_q_exits_and_refreshes_normal_surface() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let mut control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
-    assert!(matches!(
-        handler
-            .handle(Request::SendKeys(SendKeysRequest {
-                target: target.clone(),
-                keys: vec!["printf 'P0-LINE-12\\n'".to_owned(), "Enter".to_owned()],
-            }))
-            .await,
-        Response::SendKeys(_)
-    ));
-    wait_for_capture_containing(
+    replace_transcript_contents(
         &handler,
-        target.clone(),
-        "P0-LINE-12",
-        "copy-mode q test marker must be visible before entering copy-mode",
+        &target,
+        TerminalSize { cols: 80, rows: 24 },
+        b"P0-LINE-12\r\n",
     )
     .await;
     assert!(matches!(
@@ -271,17 +235,18 @@ async fn attached_copy_mode_updates_automatic_window_name_on_entry_and_exit() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let _control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let _control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
 
-    assert_eq!(
-        display_target_format(
-            &handler,
-            target.clone(),
-            "#{window_name}|#{pane_in_mode}|#{pane_mode}"
-        )
-        .await,
-        default_shell_pane_status()
+    let normal_status = display_target_format(
+        &handler,
+        target.clone(),
+        "#{window_name}|#{pane_in_mode}|#{pane_mode}",
+    );
+    let normal_status = normal_status.await;
+    assert!(
+        normal_status.ends_with("|0|\n"),
+        "normal pane status should report no active mode, got {normal_status:?}"
     );
     assert!(matches!(
         handler
@@ -320,7 +285,7 @@ async fn attached_copy_mode_updates_automatic_window_name_on_entry_and_exit() {
             "#{window_name}|#{pane_in_mode}|#{pane_mode}"
         )
         .await,
-        default_shell_pane_status()
+        normal_status
     );
 }
 
@@ -329,7 +294,7 @@ async fn attached_copy_mode_escape_exits_and_clears_mode_state() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let mut control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
     assert!(matches!(
         handler
@@ -371,7 +336,7 @@ async fn attached_copy_mode_u_refresh_renders_history_backing() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let mut control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
     replace_transcript_contents(
         &handler,
@@ -415,7 +380,7 @@ async fn attached_copy_mode_refresh_renders_tmux_position_indicator() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
     let alpha = session_name("alpha");
-    let mut control_rx = create_attached_session(&handler, requester_pid, &alpha).await;
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
     let target = PaneTarget::new(alpha.clone(), 0);
     replace_transcript_contents(
         &handler,
