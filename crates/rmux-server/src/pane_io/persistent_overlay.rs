@@ -178,6 +178,21 @@ pub(super) fn update_persistent_overlay_cache(
     }
 }
 
+pub(super) fn switch_requires_screen_clear(
+    persistent_overlay_visible: bool,
+    persistent_overlay_cached: bool,
+    current_overlay_state_id: Option<u64>,
+    current_target_state_id: Option<u64>,
+    next_target_state_id: Option<u64>,
+) -> bool {
+    let had_persistent_overlay = persistent_overlay_visible || persistent_overlay_cached;
+    let stale_persistent_overlay_on_screen = current_overlay_state_id != current_target_state_id;
+    let leaving_persistent_overlay =
+        current_target_state_id.is_some() && next_target_state_id.is_none();
+
+    had_persistent_overlay || stale_persistent_overlay_on_screen || leaving_persistent_overlay
+}
+
 pub(super) fn clear_then_base_frame(current_target: &OpenAttachTarget) -> Vec<u8> {
     let mut frame = Vec::with_capacity(current_target.render_frame.len() + 10);
     frame.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
@@ -224,7 +239,7 @@ mod tests {
 
     use crate::pane_io::{AttachControl, OverlayFrame};
 
-    use super::take_pending_persistent_overlay_for_state;
+    use super::{switch_requires_screen_clear, take_pending_persistent_overlay_for_state};
 
     #[test]
     fn pending_overlay_for_state_is_removed_for_frame_composition() {
@@ -264,5 +279,41 @@ mod tests {
 
         assert!(overlay.is_none());
         assert_eq!(controls.len(), 1);
+    }
+
+    #[test]
+    fn plain_refresh_without_overlay_does_not_clear_the_screen() {
+        assert!(!switch_requires_screen_clear(
+            false, false, None, None, None,
+        ));
+    }
+
+    #[test]
+    fn leaving_or_replacing_persistent_overlay_clears_the_screen() {
+        assert!(switch_requires_screen_clear(
+            true,
+            false,
+            Some(7),
+            Some(7),
+            None,
+        ));
+        assert!(switch_requires_screen_clear(
+            false,
+            true,
+            Some(7),
+            Some(7),
+            Some(8),
+        ));
+    }
+
+    #[test]
+    fn stale_persistent_overlay_state_clears_the_screen() {
+        assert!(switch_requires_screen_clear(
+            false,
+            false,
+            Some(8),
+            Some(7),
+            Some(8),
+        ));
     }
 }

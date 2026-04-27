@@ -10,7 +10,8 @@ use super::persistent_overlay::{
     accept_persistent_overlay_state, advance_persistent_overlay_state, clear_then_base_frame,
     discard_stale_persistent_overlays, is_stale_persistent_switch,
     persistent_overlay_replacement_pending, replacement_persistent_overlay_frame,
-    take_pending_persistent_overlay_for_state, update_persistent_overlay_cache,
+    switch_requires_screen_clear, take_pending_persistent_overlay_for_state,
+    update_persistent_overlay_cache,
 };
 use super::types::{AttachControl, AttachTarget, OpenAttachTarget, OverlayFrame};
 use super::wire::{
@@ -160,15 +161,13 @@ pub(super) async fn apply_pending_attach_controls(
                             next_target.as_ref(),
                         )
                     });
-                let had_persistent_overlay =
-                    *persistent_overlay_visible || persistent_overlay.is_some();
-                let stale_persistent_overlay_on_screen =
-                    *persistent_overlay_state_id != current_target.persistent_overlay_state_id;
-                let next_target_has_no_persistent_overlay =
-                    next_target.persistent_overlay_state_id.is_none();
-                let leaving_persistent_overlay =
-                    current_target.persistent_overlay_state_id.is_some()
-                        && next_target_has_no_persistent_overlay;
+                let clear_screen = switch_requires_screen_clear(
+                    *persistent_overlay_visible,
+                    persistent_overlay.is_some(),
+                    *persistent_overlay_state_id,
+                    current_target.persistent_overlay_state_id,
+                    next_target.persistent_overlay_state_id,
+                );
                 if replacement_frame.is_none() {
                     persistent_overlay.take();
                     *persistent_overlay_visible = false;
@@ -180,10 +179,7 @@ pub(super) async fn apply_pending_attach_controls(
                     stream,
                     current_target,
                     *next_target,
-                    had_persistent_overlay
-                        || stale_persistent_overlay_on_screen
-                        || leaving_persistent_overlay
-                        || next_target_has_no_persistent_overlay,
+                    clear_screen,
                     replacement_frame.as_deref(),
                 )
                 .await?;
