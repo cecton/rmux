@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use rmux_proto::{
     decode_frame, encode_frame, AttachSessionRequest, AttachSessionResponse, FrameDecoder, Request,
-    Response, RmuxError, SessionName, TerminalSize, DEFAULT_MAX_FRAME_LENGTH,
+    Response, RmuxError, SessionName, TerminalSize, DEFAULT_MAX_FRAME_LENGTH, RMUX_FRAME_MAGIC,
+    RMUX_WIRE_VERSION,
 };
 use rmux_server::{DaemonConfig, ServerDaemon, ServerHandle};
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
@@ -251,34 +252,77 @@ impl ClientConnection {
         let frame = encode_frame(&Request::AttachSession(request))?;
         self.stream.write_all(&frame).await?;
 
-        match self.read_response_exact().await? {
+        match read_response_exact(&mut self.stream).await? {
             Response::AttachSession(response) => Ok((response, self.stream)),
             other => Err(io::Error::other(format!("unexpected attach response: {other:?}")).into()),
         }
     }
+}
 
-    async fn read_response_exact(&mut self) -> Result<Response, Box<dyn Error>> {
-        let mut header = [0_u8; 4];
-        self.stream.read_exact(&mut header).await?;
-        let length = u32::from_le_bytes(header) as usize;
-        if length == 0 {
-            return Err(RmuxError::EmptyFrame.into());
-        }
-        if length > DEFAULT_MAX_FRAME_LENGTH {
-            return Err(RmuxError::FrameTooLarge {
-                length,
-                maximum: DEFAULT_MAX_FRAME_LENGTH,
-            }
-            .into());
-        }
+pub(crate) async fn read_response_exact(
+    stream: &mut UnixStream,
+) -> Result<Response, Box<dyn Error>> {
+    let frame = read_detached_frame_exact(stream).await?;
+    decode_frame(&frame).map_err(Into::into)
+}
 
-        let mut payload = vec![0_u8; length];
-        self.stream.read_exact(&mut payload).await?;
-        let mut frame = Vec::with_capacity(header.len() + payload.len());
-        frame.extend_from_slice(&header);
-        frame.extend_from_slice(&payload);
-        decode_frame(&frame).map_err(Into::into)
+async fn read_detached_frame_exact(stream: &mut UnixStream) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut frame = Vec::new();
+    let mut magic = [0_u8; 1];
+    stream.read_exact(&mut magic).await?;
+    if magic[0] != RMUX_FRAME_MAGIC {
+        return Err(RmuxError::BadFrameMagic(magic[0]).into());
     }
+    frame.push(magic[0]);
+
+    let version = read_varint_u32_exact(stream, &mut frame).await?;
+    if version != RMUX_WIRE_VERSION {
+        return Err(RmuxError::UnsupportedWireVersion {
+            got: version,
+            minimum: RMUX_WIRE_VERSION,
+            maximum: RMUX_WIRE_VERSION,
+        }
+        .into());
+    }
+
+    let mut length_bytes = [0_u8; 4];
+    stream.read_exact(&mut length_bytes).await?;
+    frame.extend_from_slice(&length_bytes);
+    let length = u32::from_le_bytes(length_bytes) as usize;
+    if length == 0 {
+        return Err(RmuxError::EmptyFrame.into());
+    }
+    if length > DEFAULT_MAX_FRAME_LENGTH {
+        return Err(RmuxError::FrameTooLarge {
+            length,
+            maximum: DEFAULT_MAX_FRAME_LENGTH,
+        }
+        .into());
+    }
+
+    let mut payload = vec![0_u8; length];
+    stream.read_exact(&mut payload).await?;
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+async fn read_varint_u32_exact(
+    stream: &mut UnixStream,
+    frame: &mut Vec<u8>,
+) -> Result<u32, Box<dyn Error>> {
+    let mut value = 0_u32;
+    for index in 0..5 {
+        let mut byte = [0_u8; 1];
+        stream.read_exact(&mut byte).await?;
+        let byte = byte[0];
+        frame.push(byte);
+        value |= u32::from(byte & 0x7f) << (index * 7);
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+
+    Err(RmuxError::Decode("wire-version varint exceeds u32 length".to_owned()).into())
 }
 
 pub(crate) struct TestHarness {

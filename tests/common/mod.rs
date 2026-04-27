@@ -321,6 +321,16 @@ pub(crate) fn pane_child_pids() -> Result<BTreeSet<u32>, Box<dyn Error>> {
 
 #[cfg(target_os = "linux")]
 fn linux_pane_child_pids() -> Result<BTreeSet<u32>, Box<dyn Error>> {
+    let pids = linux_thread_child_pids()?;
+    if !pids.is_empty() {
+        return Ok(pids);
+    }
+
+    linux_proc_ppid_child_pids(std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_thread_child_pids() -> Result<BTreeSet<u32>, Box<dyn Error>> {
     let task_directory = format!("/proc/{}/task", std::process::id());
     let tasks = match fs::read_dir(task_directory) {
         Ok(tasks) => tasks,
@@ -340,6 +350,48 @@ fn linux_pane_child_pids() -> Result<BTreeSet<u32>, Box<dyn Error>> {
 
         for pid in children.split_whitespace() {
             pids.insert(pid.parse()?);
+        }
+    }
+
+    Ok(pids)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_proc_ppid_child_pids(parent_pid: u32) -> Result<BTreeSet<u32>, Box<dyn Error>> {
+    let mut pids = BTreeSet::new();
+
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(pid) = file_name.to_string_lossy().parse::<u32>().ok() else {
+            continue;
+        };
+        if pid == parent_pid {
+            continue;
+        }
+
+        let stat = match fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let Some(fields) = stat.rsplit_once(") ").map(|(_, fields)| fields) else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let _state = fields.next();
+        let Some(ppid) = fields.next().and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        if ppid == parent_pid {
+            pids.insert(pid);
         }
     }
 

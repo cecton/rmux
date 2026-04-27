@@ -270,6 +270,7 @@ mod tests {
         values.iter().map(OsString::from).collect()
     }
 
+    #[cfg(unix)]
     fn unique_test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "rmux-cli-{label}-{}-{}",
@@ -409,9 +410,15 @@ mod tests {
     #[test]
     fn usable_shell_path_rejects_hardlink_to_the_current_executable() {
         let current_exe = std::env::current_exe().expect("current executable path");
-        let dir = unique_test_dir("shell-hardlink");
-        fs::create_dir_all(&dir).expect("create temp dir");
-        let link = dir.join("rmux-shell-hardlink");
+        let link = current_exe
+            .parent()
+            .expect("current executable has a parent directory")
+            .join(format!(
+                "rmux-shell-hardlink-{}-{}",
+                std::process::id(),
+                UNIQUE_TEST_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+        let _ = fs::remove_file(&link);
         fs::hard_link(&current_exe, &link).expect("create hardlink");
 
         assert!(same_file_identity_for_paths(&current_exe, &link));
@@ -420,7 +427,7 @@ mod tests {
             "shell startup must reject a differently named hardlink to the current executable"
         );
 
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&link);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use rmux_proto::{decode_frame, AttachMessage, Request, Response};
+use rmux_proto::{AttachMessage, Request, Response};
 use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
 
@@ -12,15 +12,9 @@ pub(super) const STEP_TIMEOUT: Duration = Duration::from_secs(6);
 pub(super) async fn read_response_exact(
     stream: &mut tokio::net::UnixStream,
 ) -> Result<Response, Box<dyn Error>> {
-    let mut header = [0_u8; 4];
-    stream.read_exact(&mut header).await?;
-    let length = u32::from_le_bytes(header) as usize;
-    let mut payload = vec![0_u8; length];
-    stream.read_exact(&mut payload).await?;
-
-    let mut frame = header.to_vec();
-    frame.extend_from_slice(&payload);
-    Ok(decode_frame(&frame)?)
+    tokio::time::timeout(STEP_TIMEOUT, crate::common::read_response_exact(stream))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out reading response frame"))?
 }
 
 pub(super) async fn read_attach_message(

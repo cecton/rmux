@@ -8,13 +8,14 @@ use std::time::Duration;
 
 mod common;
 
-use common::{send_request, session_name, start_server, ClientConnection, TestHarness};
-use rmux_proto::{
-    decode_frame, encode_frame, AttachSessionRequest, ErrorResponse, HookLifecycle, HookName,
-    KillSessionRequest, NewSessionRequest, Request, Response, RmuxError, ScopeSelector,
-    SetHookRequest, TerminalSize,
+use common::{
+    read_response_exact, send_request, session_name, start_server, ClientConnection, TestHarness,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use rmux_proto::{
+    encode_frame, AttachSessionRequest, ErrorResponse, HookLifecycle, HookName, KillSessionRequest,
+    NewSessionRequest, Request, Response, RmuxError, ScopeSelector, SetHookRequest, TerminalSize,
+};
+use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
 
@@ -350,16 +351,4 @@ async fn wait_for_file_contents(path: &Path, expected: &str) -> Result<(), Box<d
         path.display()
     ))
     .into())
-}
-
-async fn read_response_exact(stream: &mut UnixStream) -> Result<Response, Box<dyn Error>> {
-    let mut header = [0_u8; 4];
-    stream.read_exact(&mut header).await?;
-    let length = u32::from_le_bytes(header) as usize;
-    let mut payload = vec![0_u8; length];
-    stream.read_exact(&mut payload).await?;
-
-    let mut frame = header.to_vec();
-    frame.extend_from_slice(&payload);
-    Ok(decode_frame(&frame)?)
 }
