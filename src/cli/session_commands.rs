@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rmux_client::connect;
 use rmux_client::{detect_context, ClientContext};
@@ -26,6 +26,9 @@ pub(super) fn run_new_session(
     let mut connection = connect_with_startserver(socket_path, startup)?;
     let client_flags = optional_client_flags(args.flags.clone());
     let client_size = current_terminal_size();
+    let working_directory = args
+        .working_directory
+        .or_else(current_working_directory_string);
     let response = connection
         .new_session_extended(NewSessionExtRequest {
             session_name: args.session_name.clone(),
@@ -33,7 +36,7 @@ pub(super) fn run_new_session(
             size: build_terminal_size(args.cols, args.rows),
             environment: (!args.environment.is_empty()).then_some(args.environment),
             group_target: args.group_target,
-            working_directory: args.working_directory,
+            working_directory,
             attach_if_exists: args.attach_if_exists,
             detach_other_clients: args.detach_other_clients || args.kill_other_clients,
             kill_other_clients: args.kill_other_clients,
@@ -93,6 +96,14 @@ pub(super) fn run_new_session(
             },
         ),
     }
+}
+
+fn current_working_directory_string() -> Option<String> {
+    current_working_directory().map(|path| path.to_string_lossy().into_owned())
+}
+
+fn current_working_directory() -> Option<PathBuf> {
+    std::env::current_dir().ok().filter(|path| path.is_dir())
 }
 
 pub(super) fn run_has_session(

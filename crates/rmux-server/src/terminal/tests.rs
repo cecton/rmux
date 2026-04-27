@@ -302,16 +302,15 @@ fn terminal_profile_runtime_window_name_tracks_spawned_command_shape() {
 }
 
 #[test]
-fn resolve_shell_path_prefers_login_shell_before_shell_env_fallback() {
+fn resolve_shell_path_prefers_default_shell_option_before_shell_env_fallback() {
     let options = OptionStore::new();
     let environment = HashMap::from([("SHELL".to_owned(), "/bin/sh".to_owned())]);
     let resolved = super::resolve_shell_path(&options, None, &environment);
 
-    if let Some(login_shell) = super::current_user_login_shell() {
-        assert_eq!(resolved, login_shell);
-    } else {
-        assert_eq!(resolved, PathBuf::from("/bin/sh"));
-    }
+    assert_eq!(
+        resolved,
+        super::normalize_shell_path(super::default_shell_path())
+    );
 }
 
 #[test]

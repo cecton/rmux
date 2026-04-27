@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::env;
 use std::ffi::OsString;
 #[cfg(unix)]
 use std::fs;
@@ -214,29 +216,89 @@ pub(crate) fn spawn_pane_process(
 
 fn spawn_command(profile: &TerminalProfile, command: Option<&[String]>) -> ChildCommand {
     match command {
-        Some([single]) => shell_child_command(profile.shell(), single),
+        Some([single]) => shell_child_command(profile, single),
         Some(argv) if !argv.is_empty() => ChildCommand::new(&argv[0]).args(&argv[1..]),
         #[cfg(unix)]
         _ => ChildCommand::new(profile.shell()).arg0(login_shell_argv0(profile.shell())),
         #[cfg(windows)]
-        _ => ChildCommand::new(profile.shell()),
+        _ => interactive_shell_child_command(profile),
     }
 }
 
 #[cfg(unix)]
-fn shell_child_command(shell: &Path, command: &str) -> ChildCommand {
-    ChildCommand::new(shell).arg("-c").arg(command)
+fn shell_child_command(profile: &TerminalProfile, command: &str) -> ChildCommand {
+    ChildCommand::new(profile.shell()).arg("-c").arg(command)
 }
 
 #[cfg(windows)]
-fn shell_child_command(shell: &Path, command: &str) -> ChildCommand {
-    match executable_name(shell).as_deref() {
-        Some("powershell.exe" | "powershell" | "pwsh.exe" | "pwsh") => ChildCommand::new(shell)
+fn shell_child_command(profile: &TerminalProfile, command: &str) -> ChildCommand {
+    match windows_shell_kind(profile.shell()) {
+        WindowsShellKind::PowerShell => ChildCommand::new(profile.shell())
             .arg("-NoProfile")
             .arg("-Command")
-            .arg(command),
-        _ => ChildCommand::new(shell).arg("/C").arg(command),
+            .arg(format!(
+                "Set-Location -LiteralPath {}; {command}",
+                powershell_single_quoted(profile.cwd())
+            )),
+        WindowsShellKind::Cmd => ChildCommand::new(profile.shell())
+            .arg("/D")
+            .arg("/S")
+            .arg("/C")
+            .arg(format!(
+                "cd /d {} && {command}",
+                cmd_double_quoted(profile.cwd())
+            )),
+        WindowsShellKind::Other => ChildCommand::new(profile.shell()).arg("/C").arg(command),
     }
+}
+
+#[cfg(windows)]
+fn interactive_shell_child_command(profile: &TerminalProfile) -> ChildCommand {
+    match windows_shell_kind(profile.shell()) {
+        WindowsShellKind::PowerShell => ChildCommand::new(profile.shell())
+            .arg("-NoExit")
+            .arg("-Command")
+            .arg(format!(
+                "Set-Location -LiteralPath {}",
+                powershell_single_quoted(profile.cwd())
+            )),
+        WindowsShellKind::Cmd => ChildCommand::new(profile.shell())
+            .arg("/D")
+            .arg("/K")
+            .arg(format!("cd /d {}", cmd_double_quoted(profile.cwd()))),
+        WindowsShellKind::Other => ChildCommand::new(profile.shell()),
+    }
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowsShellKind {
+    Cmd,
+    PowerShell,
+    Other,
+}
+
+#[cfg(windows)]
+fn windows_shell_kind(shell: &Path) -> WindowsShellKind {
+    match executable_name(shell)
+        .as_deref()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("cmd.exe" | "cmd") => WindowsShellKind::Cmd,
+        Some("powershell.exe" | "powershell" | "pwsh.exe" | "pwsh") => WindowsShellKind::PowerShell,
+        _ => WindowsShellKind::Other,
+    }
+}
+
+#[cfg(windows)]
+fn powershell_single_quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+}
+
+#[cfg(windows)]
+fn cmd_double_quoted(path: &Path) -> String {
+    format!("\"{}\"", path.to_string_lossy().replace('"', "\"\""))
 }
 
 #[cfg(unix)]
@@ -317,13 +379,85 @@ fn resolve_shell_path(
     environment: &HashMap<String, String>,
 ) -> PathBuf {
     session_name
-        .and_then(|session_name| options.session_value(session_name, OptionName::DefaultShell))
-        .or_else(|| options.global_value(OptionName::DefaultShell))
+        .and_then(|session_name| options.resolve(Some(session_name), OptionName::DefaultShell))
+        .or_else(|| options.resolve(None, OptionName::DefaultShell))
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .map(normalize_shell_path)
         .or_else(current_user_login_shell)
         .or_else(|| environment.get("SHELL").map(PathBuf::from))
+        .map(normalize_shell_path)
         .unwrap_or_else(default_shell_path)
+}
+
+#[cfg(unix)]
+fn normalize_shell_path(path: PathBuf) -> PathBuf {
+    path
+}
+
+#[cfg(windows)]
+fn normalize_shell_path(path: PathBuf) -> PathBuf {
+    if path.components().count() > 1 {
+        return path;
+    }
+
+    find_shell_on_path(&path).unwrap_or(path)
+}
+
+#[cfg(windows)]
+fn find_shell_on_path(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if matches!(name.as_str(), "cmd" | "cmd.exe") {
+        return env::var_os("COMSPEC").map(PathBuf::from).or_else(|| {
+            env::var_os("SystemRoot")
+                .map(|root| PathBuf::from(root).join("System32").join("cmd.exe"))
+        });
+    }
+    if matches!(name.as_str(), "powershell" | "powershell.exe") {
+        return env::var_os("SystemRoot").map(|root| {
+            PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        });
+    }
+
+    search_path(path)
+}
+
+#[cfg(windows)]
+fn search_path(path: &Path) -> Option<PathBuf> {
+    let path_value = env::var_os("PATH")?;
+    let extensions = executable_extensions(path);
+    for directory in env::split_paths(&path_value) {
+        for extension in &extensions {
+            let candidate = directory.join(format!("{}{}", path.to_string_lossy(), extension));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn executable_extensions(path: &Path) -> Vec<String> {
+    if path.extension().is_some() {
+        return vec![String::new()];
+    }
+
+    env::var_os("PATHEXT")
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .split(';')
+                .filter(|extension| !extension.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|extensions| !extensions.is_empty())
+        .unwrap_or_else(|| vec![".COM".to_owned(), ".EXE".to_owned(), ".BAT".to_owned()])
 }
 
 #[cfg(unix)]
