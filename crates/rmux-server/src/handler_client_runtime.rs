@@ -386,6 +386,7 @@ pub(in crate::handler) fn effective_client_terminal_context(
         client_terminal.utf8 = true;
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "sync");
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "bpaste");
+        push_unique_terminal_feature(&mut client_terminal.terminal_features, "mouse");
     }
     client_terminal
 }
@@ -489,7 +490,7 @@ mod tests {
         );
 
         assert!(context.utf8);
-        assert_eq!(context.terminal_features, vec!["sync", "bpaste"]);
+        assert_eq!(context.terminal_features, vec!["sync", "bpaste", "mouse"]);
     }
 
     #[test]
@@ -498,12 +499,12 @@ mod tests {
         let context = effective_client_terminal_context(
             Some(&environment),
             &ClientTerminalContext {
-                terminal_features: vec!["SYNC".to_owned(), "BPASTE".to_owned()],
+                terminal_features: vec!["SYNC".to_owned(), "BPASTE".to_owned(), "MOUSE".to_owned()],
                 utf8: false,
             },
         );
 
         assert!(context.utf8);
-        assert_eq!(context.terminal_features, vec!["SYNC", "BPASTE"]);
+        assert_eq!(context.terminal_features, vec!["SYNC", "BPASTE", "MOUSE"]);
     }
 }

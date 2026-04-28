@@ -1,7 +1,9 @@
 use super::{CursorScope, OuterTerminal, OuterTerminalContext};
 use crate::pane_screen_state::PaneScreenState;
 use rmux_core::{OptionStore, Session};
-use rmux_proto::{OptionName, ScopeSelector, SessionName, SetOptionMode, TerminalSize};
+use rmux_proto::{
+    ClientTerminalContext, OptionName, ScopeSelector, SessionName, SetOptionMode, TerminalSize,
+};
 
 fn session_name(value: &str) -> SessionName {
     SessionName::new(value).expect("valid session name")
@@ -108,6 +110,38 @@ fn attach_sequences_follow_focus_and_extended_key_options() {
     assert!(stop.contains("\u{1b}[?1004l"));
     assert!(stop.contains("\u{1b}[>4m"));
     assert!(stop.ends_with("\u{1b}[?1049l\u{1b}[23;0;0t"));
+}
+
+#[test]
+fn client_mouse_feature_enables_mouse_attach_sequences_when_mouse_option_is_on() {
+    let mut options = OptionStore::new();
+    options
+        .set(
+            ScopeSelector::Global,
+            OptionName::Mouse,
+            "on".to_owned(),
+            SetOptionMode::Replace,
+        )
+        .expect("mouse set succeeds");
+
+    let terminal = OuterTerminal::resolve_for_session(
+        &options,
+        Some(&session_name("alpha")),
+        OuterTerminalContext::default().with_client_terminal(&ClientTerminalContext {
+            terminal_features: vec!["mouse".to_owned()],
+            utf8: true,
+        }),
+    );
+
+    let start = String::from_utf8(terminal.attach_start_sequence()).expect("utf8");
+    let stop = String::from_utf8(terminal.attach_stop_sequence()).expect("utf8");
+
+    assert!(start.contains("\u{1b}[?1006h"));
+    assert!(start.contains("\u{1b}[?1002h"));
+    assert!(start.contains("\u{1b}[?1000h"));
+    assert!(stop.contains("\u{1b}[?1000l"));
+    assert!(stop.contains("\u{1b}[?1002l"));
+    assert!(stop.contains("\u{1b}[?1006l"));
 }
 
 #[test]
