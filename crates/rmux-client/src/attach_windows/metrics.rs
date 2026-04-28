@@ -3,12 +3,14 @@ use std::fs;
 use std::path::PathBuf;
 
 const METRICS_FILE_ENV: &str = "RMUX_ATTACH_METRICS_FILE";
+const LARGE_FRAME_THRESHOLD_BYTES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct AttachMetrics {
     data_frames: u64,
     data_bytes: u64,
     max_frame_bytes: usize,
+    large_frames: u64,
     full_clears: u64,
 }
 
@@ -17,6 +19,9 @@ impl AttachMetrics {
         self.data_frames = self.data_frames.saturating_add(1);
         self.data_bytes = self.data_bytes.saturating_add(bytes.len() as u64);
         self.max_frame_bytes = self.max_frame_bytes.max(bytes.len());
+        if bytes.len() >= LARGE_FRAME_THRESHOLD_BYTES {
+            self.large_frames = self.large_frames.saturating_add(1);
+        }
         if contains_full_clear(bytes) {
             self.full_clears = self.full_clears.saturating_add(1);
         }
@@ -24,8 +29,13 @@ impl AttachMetrics {
 
     fn to_json(self) -> String {
         format!(
-            "{{\"schema\":1,\"data_frames\":{},\"data_bytes\":{},\"max_frame_bytes\":{},\"full_clears\":{}}}\n",
-            self.data_frames, self.data_bytes, self.max_frame_bytes, self.full_clears
+            "{{\"schema\":1,\"data_frames\":{},\"data_bytes\":{},\"max_frame_bytes\":{},\"large_frame_threshold_bytes\":{},\"large_frames\":{},\"full_clears\":{}}}\n",
+            self.data_frames,
+            self.data_bytes,
+            self.max_frame_bytes,
+            LARGE_FRAME_THRESHOLD_BYTES,
+            self.large_frames,
+            self.full_clears
         )
     }
 }
@@ -76,10 +86,12 @@ mod tests {
 
         metrics.observe_data_frame(b"abc");
         metrics.observe_data_frame(b"\x1b[H\x1b[2Jabcdef");
+        metrics.observe_data_frame(&[b'x'; LARGE_FRAME_THRESHOLD_BYTES]);
 
-        assert_eq!(metrics.data_frames, 2);
-        assert_eq!(metrics.data_bytes, 16);
-        assert_eq!(metrics.max_frame_bytes, 13);
+        assert_eq!(metrics.data_frames, 3);
+        assert_eq!(metrics.data_bytes, 16 + LARGE_FRAME_THRESHOLD_BYTES as u64);
+        assert_eq!(metrics.max_frame_bytes, LARGE_FRAME_THRESHOLD_BYTES);
+        assert_eq!(metrics.large_frames, 1);
         assert_eq!(metrics.full_clears, 1);
     }
 
@@ -100,6 +112,7 @@ mod tests {
         let json = fs::read_to_string(&path).expect("metrics json written");
         let _ = fs::remove_file(&path);
         assert!(json.contains("\"data_frames\":1"));
+        assert!(json.contains("\"large_frame_threshold_bytes\":1024"));
         assert!(json.contains("\"full_clears\":1"));
     }
 }

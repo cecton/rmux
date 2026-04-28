@@ -45,6 +45,9 @@ pub(super) fn advance_persistent_overlay_state(
     deferred_controls: &mut VecDeque<AttachControl>,
     barrier_state_id: u64,
 ) {
+    if barrier_state_id == 0 {
+        return;
+    }
     if current_state_id.is_some_and(|current| barrier_state_id < current) {
         return;
     }
@@ -245,7 +248,10 @@ mod tests {
 
     use crate::pane_io::{AttachControl, OverlayFrame};
 
-    use super::{switch_requires_screen_clear, take_pending_persistent_overlay_for_state};
+    use super::{
+        advance_persistent_overlay_state, switch_requires_screen_clear,
+        take_pending_persistent_overlay_for_state,
+    };
 
     #[test]
     fn pending_overlay_for_state_is_removed_for_frame_composition() {
@@ -292,6 +298,16 @@ mod tests {
         assert!(!switch_requires_screen_clear(
             false, false, None, None, None,
         ));
+    }
+
+    #[test]
+    fn zero_overlay_barrier_is_ignored_as_initial_sentinel() {
+        let mut current_state_id = None;
+        let mut controls = VecDeque::new();
+
+        advance_persistent_overlay_state(&mut current_state_id, None, &mut controls, 0);
+
+        assert_eq!(current_state_id, None);
     }
 
     #[test]
