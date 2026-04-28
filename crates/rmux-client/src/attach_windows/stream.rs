@@ -86,10 +86,12 @@ where
                 let Some(bytes) = bytes else {
                     continue;
                 };
-                write_async_attach_message(
-                    &mut writer,
-                    AttachMessage::Keystroke(AttachedKeystroke::new(bytes)),
-                ).await?;
+                for chunk in super::input::attach_input_chunks(&bytes) {
+                    write_async_attach_message(
+                        &mut writer,
+                        AttachMessage::Keystroke(AttachedKeystroke::new(chunk.to_vec())),
+                    ).await?;
+                }
             }
             size = resize_rx.recv() => {
                 let Some(size) = size else {

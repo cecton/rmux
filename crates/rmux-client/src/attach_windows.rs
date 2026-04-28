@@ -10,6 +10,8 @@ use tokio::sync::mpsc;
 
 use crate::ClientError;
 
+#[path = "attach_windows/input.rs"]
+mod input;
 #[path = "attach_windows/metrics.rs"]
 mod metrics;
 #[path = "attach/screen.rs"]

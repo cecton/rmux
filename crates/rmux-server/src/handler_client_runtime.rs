@@ -383,7 +383,9 @@ pub(in crate::handler) fn effective_client_terminal_context(
     let mut client_terminal = client_terminal.clone();
     client_terminal.utf8 |= client_environment_infers_utf8(client_environment);
     if client_environment_is_windows_terminal(client_environment) {
+        client_terminal.utf8 = true;
         push_unique_terminal_feature(&mut client_terminal.terminal_features, "sync");
+        push_unique_terminal_feature(&mut client_terminal.terminal_features, "bpaste");
     }
     client_terminal
 }
@@ -486,20 +488,22 @@ mod tests {
             &ClientTerminalContext::default(),
         );
 
-        assert_eq!(context.terminal_features, vec!["sync"]);
+        assert!(context.utf8);
+        assert_eq!(context.terminal_features, vec!["sync", "bpaste"]);
     }
 
     #[test]
-    fn windows_terminal_sync_feature_is_not_duplicated() {
+    fn windows_terminal_features_are_not_duplicated() {
         let environment = HashMap::from([("WT_SESSION".to_owned(), "session-id".to_owned())]);
         let context = effective_client_terminal_context(
             Some(&environment),
             &ClientTerminalContext {
-                terminal_features: vec!["SYNC".to_owned()],
+                terminal_features: vec!["SYNC".to_owned(), "BPASTE".to_owned()],
                 utf8: false,
             },
         );
 
-        assert_eq!(context.terminal_features, vec!["SYNC"]);
+        assert!(context.utf8);
+        assert_eq!(context.terminal_features, vec!["SYNC", "BPASTE"]);
     }
 }
