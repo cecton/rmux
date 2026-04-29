@@ -11,8 +11,9 @@ rmux \- tmux-compatible terminal multiplexer CLI
 .RB [ -T " features" ]
 .RI [ command " [" flags ]]
 .SH DESCRIPTION
-RMUX is a Linux-only terminal multiplexer built around a Unix-socket client and
-server architecture.
+RMUX is a cross-platform terminal multiplexer built around a local client and
+server architecture. Unix builds use OS socket credentials; Windows builds use
+same-user named pipes and ConPTY.
 It preserves tmux-compatible command-line behavior while keeping RMUX product
 labels in binary output, help text, and status text.
 .SH TOP-LEVEL OPTIONS
