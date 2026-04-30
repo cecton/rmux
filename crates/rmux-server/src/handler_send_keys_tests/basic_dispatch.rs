@@ -315,8 +315,9 @@ async fn send_keys_k_uses_copy_mode_bindings_until_copy_mode_exits() {
         .register_attach(requester_pid, alpha.clone(), control_tx)
         .await;
 
-    let bound = handler
-        .handle(Request::BindKey(BindKeyRequest {
+    let bound = handle_boxed(
+        &handler,
+        Request::BindKey(BindKeyRequest {
             table_name: "copy-mode".to_owned(),
             key: "j".to_owned(),
             note: Some("copy-mode-hit".to_owned()),
@@ -327,12 +328,14 @@ async fn send_keys_k_uses_copy_mode_bindings_until_copy_mode_exits() {
                 "copy-mode-hit".to_owned(),
                 "ok".to_owned(),
             ]),
-        }))
-        .await;
+        }),
+    )
+    .await;
     assert!(matches!(bound, Response::BindKey(_)));
 
-    let entered = handler
-        .handle(Request::CopyMode(CopyModeRequest {
+    let entered = handle_boxed(
+        &handler,
+        Request::CopyMode(CopyModeRequest {
             target: Some(target.clone()),
             page_down: false,
             exit_on_scroll: false,
@@ -342,12 +345,14 @@ async fn send_keys_k_uses_copy_mode_bindings_until_copy_mode_exits() {
             scrollbar_scroll: false,
             source: None,
             page_up: false,
-        }))
-        .await;
+        }),
+    )
+    .await;
     assert!(matches!(entered, Response::CopyMode(_)));
 
-    let dispatched = handler
-        .handle(Request::SendKeysExt(SendKeysExtRequest {
+    let dispatched = handle_boxed(
+        &handler,
+        Request::SendKeysExt(SendKeysExtRequest {
             target: Some(target),
             keys: vec!["j".to_owned(), "q".to_owned()],
             expand_formats: false,
@@ -358,30 +363,35 @@ async fn send_keys_k_uses_copy_mode_bindings_until_copy_mode_exits() {
             forward_mouse_event: false,
             reset_terminal: false,
             repeat_count: None,
-        }))
-        .await;
+        }),
+    )
+    .await;
     assert_eq!(
         dispatched,
         Response::SendKeys(SendKeysResponse { key_count: 2 })
     );
 
-    let shown = handler
-        .handle(Request::ShowBuffer(ShowBufferRequest {
+    let shown = handle_boxed(
+        &handler,
+        Request::ShowBuffer(ShowBufferRequest {
             name: Some("copy-mode-hit".to_owned()),
-        }))
-        .await;
+        }),
+    )
+    .await;
     let Response::ShowBuffer(response) = shown else {
         panic!("expected show-buffer response");
     };
     assert_eq!(response.command_output().stdout(), b"ok");
 
-    let listed = handler
-        .handle(Request::ListPanes(ListPanesRequest {
+    let listed = handle_boxed(
+        &handler,
+        Request::ListPanes(ListPanesRequest {
             target: alpha,
             format: Some("#{pane_in_mode}".to_owned()),
             target_window_index: None,
-        }))
-        .await;
+        }),
+    )
+    .await;
     let Response::ListPanes(response) = listed else {
         panic!("expected list-panes response");
     };
