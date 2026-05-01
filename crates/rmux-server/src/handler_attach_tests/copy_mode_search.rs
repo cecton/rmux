@@ -108,6 +108,49 @@ async fn copy_mode_search_prompt_consumes_query_without_pane_leak() {
 }
 
 #[tokio::test]
+async fn copy_mode_question_search_prompt_consumes_query_without_pane_leak() {
+    let handler = RequestHandler::new();
+    let requester_pid = std::process::id();
+    let alpha = session_name("alpha");
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
+    let target = PaneTarget::new(alpha.clone(), 0);
+    set_vi_mode_keys(&handler, &alpha).await;
+
+    assert_eq!(
+        enter_copy_mode_with_search_seed(&handler, &target).await,
+        "1:0,5:\n"
+    );
+    drain_attach_controls(&mut control_rx);
+    let before_capture = capture_pane_print(&handler, target.clone()).await;
+
+    let mut pending_input = Vec::new();
+    send_copy_search_key(&handler, requester_pid, &mut pending_input, b"?").await;
+    let prompt = handler
+        .attached_prompt_render(requester_pid)
+        .await
+        .expect("vi question mark opens a copy-mode search prompt");
+    assert!(
+        prompt.prompt.contains("(search up)"),
+        "copy-mode backward search prompt must be distinct from the shell prompt, got {prompt:?}"
+    );
+    drain_attach_controls(&mut control_rx);
+
+    send_copy_search_key(&handler, requester_pid, &mut pending_input, b"beta\r").await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        copy_search_status(&handler, target.clone()).await,
+        "1:6,4:beta\n",
+        "primary ? search must land on the previous beta match from the copy cursor"
+    );
+
+    assert_eq!(
+        capture_pane_print(&handler, target).await,
+        before_capture,
+        "? search query bytes must not mutate the pane screen"
+    );
+}
+
+#[tokio::test]
 async fn copy_mode_search_repeat_next_and_previous_match_tmux_order() {
     let handler = RequestHandler::new();
     let requester_pid = std::process::id();
@@ -180,5 +223,81 @@ async fn copy_mode_search_repeat_next_and_previous_match_tmux_order() {
     assert!(
         forwarded_to_pane,
         "normal pane input should resume after copy-mode search dismiss"
+    );
+}
+
+#[tokio::test]
+async fn copy_mode_question_search_repeat_next_and_reverse_match_tmux_order() {
+    let handler = RequestHandler::new();
+    let requester_pid = std::process::id();
+    let alpha = session_name("alpha");
+    let mut control_rx = create_quiet_attached_session(&handler, requester_pid, &alpha).await;
+    let target = PaneTarget::new(alpha.clone(), 0);
+    set_vi_mode_keys(&handler, &alpha).await;
+    let _ = enter_copy_mode_with_search_seed(&handler, &target).await;
+    drain_attach_controls(&mut control_rx);
+    let before_capture = capture_pane_print(&handler, target.clone()).await;
+
+    handler
+        .execute_copy_mode_command(
+            requester_pid,
+            target.clone(),
+            "search-backward",
+            &["--".to_owned(), "beta".to_owned()],
+            1,
+        )
+        .await
+        .expect("direct primary search-backward setup");
+    assert_eq!(
+        copy_search_status(&handler, target.clone()).await,
+        "1:6,4:beta\n",
+        "primary search-backward must match tmux oracle before testing n/N"
+    );
+
+    let mut pending_input = Vec::new();
+    send_copy_search_key(&handler, requester_pid, &mut pending_input, b"n").await;
+    assert_eq!(
+        copy_search_status(&handler, target.clone()).await,
+        "1:7,3:beta\n",
+        "n must repeat the primary backward search direction"
+    );
+
+    send_copy_search_key(&handler, requester_pid, &mut pending_input, b"N").await;
+    assert_eq!(
+        copy_search_status(&handler, target.clone()).await,
+        "1:6,4:beta\n",
+        "N must reverse the primary backward search direction for one step"
+    );
+
+    assert_eq!(
+        capture_pane_print(&handler, target.clone()).await,
+        before_capture,
+        "? search repeat keys must not reach or mutate pane IO"
+    );
+
+    send_copy_search_key(&handler, requester_pid, &mut pending_input, b"q").await;
+    assert_eq!(
+        copy_search_status(&handler, target.clone()).await,
+        "0:,:\n",
+        "q must exit copy-mode after ? search repeat navigation"
+    );
+    assert!(
+        !capture_pane_print(&handler, target.clone())
+            .await
+            .contains("\nq"),
+        "q must not appear in the pane capture after ? search dismiss"
+    );
+
+    let forwarded_to_pane = handler
+        .handle_attached_live_input_inner(
+            requester_pid,
+            &mut pending_input,
+            b"RMUX_AFTER_COPY_QUESTION_SEARCH",
+        )
+        .await
+        .expect("normal input resumes after ? copy-mode search");
+    assert!(
+        forwarded_to_pane,
+        "normal pane input should resume after ? copy-mode search dismiss"
     );
 }
