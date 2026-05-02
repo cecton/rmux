@@ -26,9 +26,19 @@ async fn attached_remain_on_exit_strips_the_submitted_exit_line_from_dead_pane_c
         .await
         .expect("attached exit input");
     wait_for_dead_pane(&handler, &alpha, 0, 0).await;
-    sleep(Duration::from_millis(150)).await;
 
-    let capture = capture_pane_print(&handler, target).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let capture = loop {
+        let capture = capture_pane_print(&handler, target.clone()).await;
+        if capture.contains("Pane is dead") && !capture.contains("PROMPT> exit") {
+            break capture;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "attached remain-on-exit capture did not settle, got {capture:?}"
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
     assert!(
         !capture.contains("PROMPT> exit"),
         "attached remain-on-exit capture must not keep the submitted exit line, got {capture:?}"

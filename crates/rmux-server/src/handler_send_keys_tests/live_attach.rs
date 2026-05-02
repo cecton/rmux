@@ -353,7 +353,7 @@ async fn live_attach_focus_sequences_pass_through_unchanged() {
 
     let expected = b"\x1b[I\x1b[O";
     let capture =
-        PaneInputCapture::start(&handler, &alpha, "live-attach-focus", expected.len()).await;
+        RawPaneInputProbe::start(&handler, &alpha, "live-attach-focus", expected.len()).await;
 
     handler
         .handle_attached_live_input_for_test(requester_pid, b"\x1b[I\x1b[O")
@@ -361,7 +361,7 @@ async fn live_attach_focus_sequences_pass_through_unchanged() {
         .expect("live attach focus input");
 
     capture.finish(&handler, &alpha).await;
-    capture.assert_contents(expected).await;
+    capture.assert_contents(&handler, expected).await;
 }
 
 #[tokio::test]

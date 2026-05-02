@@ -22,7 +22,7 @@ mod basic_dispatch;
 #[path = "handler_send_keys_tests/bindings_timeouts.rs"]
 mod bindings_timeouts;
 
-use super::super::input_capture::{PaneInputCapture, RawPaneInputProbe};
+use super::super::input_capture::RawPaneInputProbe;
 
 #[path = "handler_send_keys_tests/live_attach.rs"]
 mod live_attach;

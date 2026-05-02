@@ -218,23 +218,14 @@ async fn attach_session_replays_all_visible_pane_screens() {
     let handler = RequestHandler::new();
     let alpha = session_name("alpha");
 
+    create_quiet_session(&handler, &alpha).await;
     assert!(matches!(
         handler
-            .handle(Request::NewSession(NewSessionRequest {
-                session_name: alpha.clone(),
-                detached: true,
-                size: Some(TerminalSize { cols: 80, rows: 24 }),
-                environment: None,
-            }))
-            .await,
-        Response::NewSession(_)
-    ));
-    assert!(matches!(
-        handler
-            .handle(Request::SplitWindow(SplitWindowRequest {
+            .handle(Request::SplitWindowExt(SplitWindowExtRequest {
                 target: SplitWindowTarget::Session(alpha.clone()),
                 direction: rmux_proto::SplitDirection::Vertical,
                 environment: None,
+                command: Some(quiet_attached_command()),
             }))
             .await,
         Response::SplitWindow(_)
@@ -268,8 +259,14 @@ async fn attach_session_replays_all_visible_pane_screens() {
     let render_frame =
         String::from_utf8(outcome.attach.expect("attach upgrade").target.render_frame)
             .expect("render frame must be utf-8");
-    assert!(render_frame.contains("left-pane"));
-    assert!(render_frame.contains("right-pane"));
+    assert!(
+        render_frame.contains("left-pane"),
+        "attach frame must include left pane transcript, got {render_frame:?}"
+    );
+    assert!(
+        render_frame.contains("right-pane"),
+        "attach frame must include right pane transcript, got {render_frame:?}"
+    );
 }
 
 #[tokio::test]

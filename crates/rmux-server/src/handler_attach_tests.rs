@@ -6,7 +6,7 @@ use crate::pane_io::AttachControl;
 use crate::server_access::current_owner_uid;
 use rmux_core::{input::InputParser, Screen};
 use rmux_proto::request::{
-    AttachSessionExt2Request, AttachSessionExtRequest, NewSessionExtRequest,
+    AttachSessionExt2Request, AttachSessionExtRequest, NewSessionExtRequest, SplitWindowExtRequest,
     SwitchClientExt2Request,
 };
 use rmux_proto::{
@@ -139,6 +139,15 @@ async fn create_quiet_attached_session(
     requester_pid: u32,
     session: &SessionName,
 ) -> mpsc::UnboundedReceiver<AttachControl> {
+    create_quiet_session(handler, session).await;
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    handler
+        .register_attach(requester_pid, session.clone(), control_tx)
+        .await;
+    control_rx
+}
+
+async fn create_quiet_session(handler: &RequestHandler, session: &SessionName) {
     let response = handler
         .handle(Request::NewSessionExt(NewSessionExtRequest {
             session_name: Some(session.clone()),
@@ -161,11 +170,6 @@ async fn create_quiet_attached_session(
         matches!(response, Response::NewSession(_)),
         "quiet test session should be created, got {response:?}"
     );
-    let (control_tx, control_rx) = mpsc::unbounded_channel();
-    handler
-        .register_attach(requester_pid, session.clone(), control_tx)
-        .await;
-    control_rx
 }
 
 #[cfg(windows)]
