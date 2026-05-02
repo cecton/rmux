@@ -4,6 +4,7 @@ use crate::mouse::{layout_for_session, StatusRangeType};
 use crate::pane_io::AttachControl;
 use rmux_proto::{
     BindKeyRequest, NewSessionRequest, Request, Response, Target, TerminalSize, WindowTarget,
+    DEFAULT_MAX_FRAME_LENGTH,
 };
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
@@ -137,6 +138,38 @@ async fn display_menu_keyboard_navigation_wraps_around_separators() {
         .get(&requester_pid)
         .expect("attached client");
     assert!(active.overlay.is_none());
+}
+
+#[tokio::test]
+async fn display_menu_unterminated_sgr_mouse_input_is_bounded() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("alpha");
+    let requester_pid = std::process::id();
+    let mut control_rx = create_attached_session(&handler, &alpha, requester_pid).await;
+
+    run_overlay_command(
+        &handler,
+        requester_pid,
+        r#"display-menu -T Menu "First" "f" "display-message first""#,
+    )
+    .await;
+    let _ = next_overlay_frame(&mut control_rx).await;
+
+    let mut pending_input = Vec::new();
+    handler
+        .handle_attached_live_input(requester_pid, &mut pending_input, b"\x1b[<")
+        .await
+        .expect("partial menu mouse is retained");
+    assert_eq!(pending_input, b"\x1b[<");
+
+    let overflow = vec![b'9'; DEFAULT_MAX_FRAME_LENGTH - pending_input.len() + 1];
+    let err = handler
+        .handle_attached_live_input(requester_pid, &mut pending_input, &overflow)
+        .await
+        .expect_err("unterminated menu mouse should be bounded");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    assert!(err.to_string().contains("menu overlay mouse"));
+    assert!(pending_input.is_empty());
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@ use std::io;
 
 use rmux_proto::{RmuxError, TerminalSize};
 
+use super::pane_support::retain_partial_attached_control_input;
 use super::prompt_support::PromptInputEvent;
 use super::scripting_support::{QueueCommandAction, QueueExecutionContext};
 use super::RequestHandler;
@@ -114,6 +115,10 @@ impl RequestHandler {
                         MouseDecode::Discard { size } => offset += size,
                         MouseDecode::Partial => {
                             pending_input.drain(..offset);
+                            retain_partial_attached_control_input(
+                                "popup overlay mouse",
+                                pending_input,
+                            )?;
                             return Ok(true);
                         }
                         MouseDecode::Invalid => offset += 1,
@@ -143,7 +148,10 @@ impl RequestHandler {
                     MouseDecode::Discard { size } => {
                         pending_input.drain(..size);
                     }
-                    MouseDecode::Partial => return Ok(true),
+                    MouseDecode::Partial => {
+                        retain_partial_attached_control_input("menu overlay mouse", pending_input)?;
+                        return Ok(true);
+                    }
                     MouseDecode::Invalid => {
                         pending_input.drain(..1);
                     }

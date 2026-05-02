@@ -25,6 +25,7 @@ mod pane_selection;
 #[path = "handler_pane/send_keys.rs"]
 mod pane_send_keys;
 
+pub(super) use pane_attached_input::retain_partial_attached_control_input;
 pub(super) use pane_inspection::{
     attached_status_message_for_error, command_output_from_lines, display_message_context,
     display_time,

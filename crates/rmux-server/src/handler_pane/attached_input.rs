@@ -2,7 +2,7 @@ use std::io;
 use std::time::Instant;
 
 use rmux_core::{key_code_lookup_bits, key_code_to_bytes, key_string_lookup_string};
-use rmux_proto::{OptionName, PaneTarget, RmuxError, Target};
+use rmux_proto::{OptionName, PaneTarget, RmuxError, Target, DEFAULT_MAX_FRAME_LENGTH};
 
 use super::super::{
     prompt_support::{decode_prompt_key, PromptInputEvent},
@@ -22,6 +22,26 @@ use crate::pane_io::{AttachControl, OverlayFrame};
 mod bracketed_paste;
 #[path = "attached_input/live.rs"]
 mod live;
+
+const MAX_RETAINED_ATTACHED_CONTROL_INPUT: usize = DEFAULT_MAX_FRAME_LENGTH;
+
+pub(in crate::handler) fn retain_partial_attached_control_input(
+    context: &str,
+    pending_input: &mut Vec<u8>,
+) -> io::Result<()> {
+    let retained = pending_input.len();
+    if retained <= MAX_RETAINED_ATTACHED_CONTROL_INPUT {
+        return Ok(());
+    }
+
+    pending_input.clear();
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{context} retained {retained} bytes of partial attached control input; maximum is {MAX_RETAINED_ATTACHED_CONTROL_INPUT}"
+        ),
+    ))
+}
 
 impl RequestHandler {
     async fn handle_attached_mode_tree_key_or_prefix(
@@ -169,6 +189,7 @@ impl RequestHandler {
                     }
                     MouseDecode::Partial => {
                         pending_input.drain(..offset);
+                        retain_partial_attached_control_input("mode-tree mouse", pending_input)?;
                         return Ok(());
                     }
                     MouseDecode::Invalid => {
@@ -194,6 +215,10 @@ impl RequestHandler {
                     }
                     ExtendedKeyDecode::Partial => {
                         pending_input.drain(..offset);
+                        retain_partial_attached_control_input(
+                            "mode-tree extended key",
+                            pending_input,
+                        )?;
                         return Ok(());
                     }
                     ExtendedKeyDecode::Invalid => {
@@ -219,11 +244,16 @@ impl RequestHandler {
                 }
                 AttachedKeyDecode::Partial => {
                     pending_input.drain(..offset);
+                    retain_partial_attached_control_input("mode-tree attached key", pending_input)?;
                     return Ok(());
                 }
                 AttachedKeyDecode::Invalid => {
                     let Some((event, consumed)) = decode_prompt_input_event(slice) else {
                         pending_input.drain(..offset);
+                        retain_partial_attached_control_input(
+                            "mode-tree prompt input",
+                            pending_input,
+                        )?;
                         return Ok(());
                     };
                     offset += consumed;

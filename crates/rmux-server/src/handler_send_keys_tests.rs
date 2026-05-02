@@ -10,6 +10,7 @@ use rmux_proto::{
     SelectPaneRequest, SendKeysExtRequest, SendKeysRequest, SendKeysResponse, SendPrefixRequest,
     SetOptionMode, SetOptionRequest, ShowBufferRequest, SplitDirection, SplitWindowRequest,
     SplitWindowTarget, SwitchClientExtRequest, TerminalSize, UnbindKeyRequest, WindowTarget,
+    DEFAULT_MAX_FRAME_LENGTH,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -25,6 +26,9 @@ use super::super::input_capture::{PaneInputCapture, RawPaneInputProbe};
 
 #[path = "handler_send_keys_tests/live_attach.rs"]
 mod live_attach;
+
+#[path = "handler_send_keys_tests/attached_input_bounds.rs"]
+mod attached_input_bounds;
 
 #[path = "handler_send_keys_tests/mouse_copy_mode.rs"]
 mod mouse_copy_mode;

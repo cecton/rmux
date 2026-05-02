@@ -6,7 +6,7 @@ use super::super::pane_prompt_input::{
     decode_utf8_char, is_extended_key_prefix, is_utf8_lead_byte, utf8_expected_len,
 };
 use super::bracketed_paste::{decode_bracketed_paste, BracketedPasteDecode};
-use super::{is_enter_key, is_mouse_prefix};
+use super::{is_enter_key, is_mouse_prefix, retain_partial_attached_control_input};
 use crate::input_keys::{decode_extended_key, decode_mouse, ExtendedKeyDecode, MouseDecode};
 use crate::key_table::{decode_attached_key, AttachedKeyDecode, PREFIX_TABLE};
 
@@ -123,6 +123,7 @@ impl RequestHandler {
                         forwarded_to_pane = true;
                     }
                     pending_input.drain(..offset);
+                    retain_partial_attached_control_input("live bracketed paste", pending_input)?;
                     return Ok(forwarded_to_pane);
                 }
                 BracketedPasteDecode::NotPaste => {}
@@ -146,6 +147,7 @@ impl RequestHandler {
                     }
                     MouseDecode::Partial => {
                         pending_input.drain(..raw_start);
+                        retain_partial_attached_control_input("live mouse", pending_input)?;
                         return Ok(forwarded_to_pane);
                     }
                     MouseDecode::Invalid => {
@@ -192,6 +194,7 @@ impl RequestHandler {
                     }
                     ExtendedKeyDecode::Partial => {
                         pending_input.drain(..raw_start);
+                        retain_partial_attached_control_input("live extended key", pending_input)?;
                         return Ok(forwarded_to_pane);
                     }
                     ExtendedKeyDecode::Invalid => {
@@ -226,6 +229,7 @@ impl RequestHandler {
                         )
                 {
                     pending_input.drain(..raw_start);
+                    retain_partial_attached_control_input("live utf-8", pending_input)?;
                     return Ok(forwarded_to_pane);
                 }
             }
@@ -281,6 +285,7 @@ impl RequestHandler {
                         continue;
                     }
                     pending_input.drain(..raw_start);
+                    retain_partial_attached_control_input("live attached key", pending_input)?;
                     return Ok(forwarded_to_pane);
                 }
                 AttachedKeyDecode::Invalid => {}
