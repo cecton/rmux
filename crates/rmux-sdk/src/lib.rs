@@ -15,8 +15,19 @@
 //! `rmux-proto` and are re-exported here so SDK users import them through
 //! `rmux_sdk` without ever depending on those internal crates.
 
+pub mod command;
 pub mod error;
+pub mod spec;
 pub mod types;
 
+pub use command::{RmuxCommand, RmuxCommandKind};
 pub use error::{Result, RmuxError};
-pub use types::{PaneId, RmuxEndpoint, SessionId, SessionName, WindowId};
+pub use spec::{
+    AttachSessionReuse, AttachSessionSpec, ClientTerminalSpec, NewSessionReuse, NewSessionSpec,
+    ProcessSpec, RefreshClientSpec, SplitDirectionSpec, SplitSpec, SplitTargetSpec,
+    SubscriptionSpec,
+};
+pub use types::{
+    PaneId, PaneRef, RmuxEndpoint, SessionId, SessionName, TargetRef, TerminalSizeSpec, WindowId,
+    WindowRef,
+};
