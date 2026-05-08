@@ -74,6 +74,10 @@ pub(super) fn default_overrides(tmpdir: &Path) -> EnvironmentOverrides {
             Some(tmpdir.as_os_str().to_owned()),
         ),
         (
+            OsString::from("RMUX_TMPDIR"),
+            Some(tmpdir.as_os_str().to_owned()),
+        ),
+        (
             OsString::from("TMUX_TMPDIR"),
             Some(tmpdir.as_os_str().to_owned()),
         ),

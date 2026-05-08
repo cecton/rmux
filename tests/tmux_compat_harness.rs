@@ -94,6 +94,10 @@ fn tmux_compat_harness_runs_same_argv_when_frozen_tmux_is_available() -> Result<
                 Some(harness.tmpdir().as_os_str().to_owned())
             ),
             (
+                OsString::from("RMUX_TMPDIR"),
+                Some(harness.tmpdir().as_os_str().to_owned())
+            ),
+            (
                 OsString::from("TMUX_TMPDIR"),
                 Some(harness.tmpdir().as_os_str().to_owned())
             ),
@@ -213,6 +217,10 @@ fn tmux_compat_harness_records_effective_tmux_argv_and_env_overrides() -> Result
                 Some(override_tmpdir.as_os_str().to_owned())
             ),
             (
+                OsString::from("RMUX_TMPDIR"),
+                Some(override_tmpdir.as_os_str().to_owned())
+            ),
+            (
                 OsString::from("TMUX_TMPDIR"),
                 Some(override_tmpdir.as_os_str().to_owned())
             ),
@@ -238,6 +246,10 @@ fn tmux_compat_harness_records_effective_tmux_argv_and_env_overrides() -> Result
     assert!(
         tmux_stdout.contains(&format!("TMPDIR={}", override_tmpdir.display())),
         "fake tmux did not receive configured TMPDIR: {tmux_stdout:?}"
+    );
+    assert!(
+        tmux_stdout.contains(&format!("RMUX_TMPDIR={}", override_tmpdir.display())),
+        "fake tmux did not receive configured RMUX_TMPDIR: {tmux_stdout:?}"
     );
     assert!(
         tmux_stdout.contains(&format!("TMUX_TMPDIR={}", override_tmpdir.display())),
@@ -843,7 +855,7 @@ fn tmux_compat_link_and_unlink_window_round_trip_when_frozen_tmux_is_available(
 fn write_fake_tmux(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     fs::write(
         path,
-        "#!/bin/sh\nprintf 'TMPDIR=%s\\n' \"$TMPDIR\"\nprintf 'TMUX_TMPDIR=%s\\n' \"$TMUX_TMPDIR\"\nprintf 'TMUX=%s\\n' \"${TMUX-unset}\"\nprintf 'TERM=%s\\n' \"$TERM\"\nprintf 'EXTRA=%s\\n' \"$RMUX_TMUX_COMPAT_EXTRA\"\nprintf 'ARGV='\nfor arg in \"$@\"; do printf '[%s]' \"$arg\"; done\nprintf '\\n'\n",
+        "#!/bin/sh\nprintf 'TMPDIR=%s\\n' \"$TMPDIR\"\nprintf 'RMUX_TMPDIR=%s\\n' \"$RMUX_TMPDIR\"\nprintf 'TMUX_TMPDIR=%s\\n' \"$TMUX_TMPDIR\"\nprintf 'TMUX=%s\\n' \"${TMUX-unset}\"\nprintf 'TERM=%s\\n' \"$TERM\"\nprintf 'EXTRA=%s\\n' \"$RMUX_TMUX_COMPAT_EXTRA\"\nprintf 'ARGV='\nfor arg in \"$@\"; do printf '[%s]' \"$arg\"; done\nprintf '\\n'\n",
     )?;
 
     #[cfg(unix)]

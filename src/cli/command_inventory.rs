@@ -295,3 +295,41 @@ fn list_command_usage(name: &str) -> &'static str {
         .find_map(|(command_name, usage)| (*command_name == name).then_some(*usage))
         .unwrap_or("")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_command_signatures_match_implemented_inventory_order() {
+        let expected = implemented_command_surface()
+            .iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        let actual = LIST_COMMAND_SIGNATURES
+            .iter()
+            .map(|(name, _usage)| *name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn list_command_signature_aliases_match_inventory_aliases() {
+        for entry in implemented_command_surface() {
+            let usage = list_command_usage(entry.name);
+            match entry.alias {
+                Some(alias) => assert!(
+                    usage.starts_with(&format!("({alias})")),
+                    "{} list-commands usage should start with alias ({alias}), got {usage:?}",
+                    entry.name
+                ),
+                None => assert!(
+                    !usage.starts_with('('),
+                    "{} list-commands usage should not advertise an alias, got {usage:?}",
+                    entry.name
+                ),
+            }
+        }
+    }
+}

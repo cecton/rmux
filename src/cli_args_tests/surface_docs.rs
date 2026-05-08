@@ -79,6 +79,33 @@ fn implemented_surface_matches_the_full_tmux_command_table() {
 }
 
 #[test]
+fn default_key_bindings_reference_only_implemented_commands() {
+    let implemented = super::super::implemented_command_surface()
+        .iter()
+        .map(|entry| entry.name.to_owned())
+        .collect::<BTreeSet<_>>();
+    let store = rmux_core::KeyBindingStore::default();
+    let mut referenced = BTreeSet::new();
+
+    for binding in store.list_bindings(None, rmux_core::KeyBindingSortOrder::Name, false) {
+        collect_nested_command_names(binding.binding().commands(), &mut referenced);
+    }
+
+    let unknown = referenced
+        .difference(&implemented)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        unknown.is_empty(),
+        "default list-keys bindings reference commands outside the implemented inventory: {unknown:?}"
+    );
+    assert!(
+        referenced.contains("list-keys"),
+        "serverless default-table list-keys should be represented in default bindings"
+    );
+}
+
+#[test]
 fn supported_commands_do_not_treat_short_h_as_clap_help() {
     for entry in super::super::implemented_command_surface() {
         if let Err(error) = parse_args(&[entry.name, "-h"]) {
@@ -205,6 +232,20 @@ fn manpage_surface_matches_implemented_commands_and_aliases() {
     assert!(manpage.contains(".B -Vh"));
     assert!(manpage.contains(".BR \"rmux <command> --help\" ."));
     assert!(manpage.contains(".BR \"rmux split-window -h\" ."));
+}
+
+fn collect_nested_command_names(
+    commands: &rmux_core::command_parser::ParsedCommands,
+    names: &mut BTreeSet<String>,
+) {
+    for command in commands.commands() {
+        names.insert(command.name().to_owned());
+        for argument in command.arguments() {
+            if let rmux_core::command_parser::CommandArgument::Commands(nested) = argument {
+                collect_nested_command_names(nested, names);
+            }
+        }
+    }
 }
 
 fn support_matrix_names(section: &str) -> BTreeSet<String> {
