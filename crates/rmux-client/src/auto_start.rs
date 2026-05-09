@@ -5,25 +5,31 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 use std::thread;
 use std::time::Duration;
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 use std::time::Instant;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(not(windows))]
 use rmux_proto::{ListSessionsRequest, Response};
 #[cfg(unix)]
 use rmux_sdk::bootstrap::startup_unix::{
     connect_or_start_with, StartupError, StartupOutcome, DEFAULT_STARTUP_DEADLINE,
     STARTUP_POLL_INTERVAL,
 };
+#[cfg(windows)]
+use rmux_sdk::bootstrap::startup_windows::{
+    connect_or_start_with, StartupError, StartupOutcome, DEFAULT_STARTUP_DEADLINE,
+    STARTUP_POLL_INTERVAL,
+};
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 use crate::connect_or_absent;
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 use crate::ConnectResult;
 use crate::{ClientError, Connection};
 
@@ -35,9 +41,9 @@ use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, DETACHED_PROCESS,
 };
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 const AUTO_START_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The undocumented CLI flag that switches `rmux` into hidden daemon mode.
@@ -88,6 +94,7 @@ impl AutoStartConfig {
         }
     }
 
+    #[cfg(not(windows))]
     fn loads_startup_config(&self) -> bool {
         !matches!(self.selection, AutoStartConfigSelection::Disabled)
     }
@@ -145,7 +152,16 @@ pub fn ensure_server_running_with_config(
 }
 
 /// Ensures the server is reachable, passing config load options if launched.
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn ensure_server_running_with_config(
+    socket_path: &Path,
+    config: AutoStartConfig,
+) -> Result<Connection, AutoStartError> {
+    ensure_server_running_windows(socket_path, config)
+}
+
+/// Ensures the server is reachable, passing config load options if launched.
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_server_running_with_config(
     socket_path: &Path,
     config: AutoStartConfig,
@@ -202,7 +218,66 @@ fn startup_outcome_into_connection(outcome: StartupOutcome) -> Result<Connection
     Connection::new(stream).map_err(AutoStartError::Client)
 }
 
+#[cfg(windows)]
+fn ensure_server_running_windows(
+    socket_path: &Path,
+    config: AutoStartConfig,
+) -> Result<Connection, AutoStartError> {
+    let binary_path = rmux_binary_path().map_err(AutoStartError::BinaryPath)?;
+    let launcher_binary_path = binary_path.clone();
+    let launcher_socket_path = socket_path.to_path_buf();
+    let launcher_config = config;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| AutoStartError::Client(ClientError::Io(error)))?;
+    let outcome = runtime.block_on(connect_or_start_with(
+        socket_path,
+        move || async move {
+            spawn_hidden_daemon_for(
+                &launcher_binary_path,
+                &launcher_socket_path,
+                &launcher_config,
+            )
+        },
+        DEFAULT_STARTUP_DEADLINE,
+        STARTUP_POLL_INTERVAL,
+    ));
+
+    startup_outcome_into_connection(
+        outcome.map_err(|error| auto_start_error_from_startup(error, &binary_path, socket_path))?,
+    )
+}
+
+#[cfg(windows)]
+fn startup_outcome_into_connection(outcome: StartupOutcome) -> Result<Connection, AutoStartError> {
+    Connection::new(outcome.into_stream()).map_err(AutoStartError::Client)
+}
+
 #[cfg(unix)]
+fn auto_start_error_from_startup(
+    error: StartupError,
+    binary_path: &Path,
+    socket_path: &Path,
+) -> AutoStartError {
+    match error {
+        StartupError::Launcher { source } => AutoStartError::Launch {
+            path: binary_path.to_path_buf(),
+            error: source,
+        },
+        StartupError::StartupTimeout { waited, .. } => AutoStartError::TimedOut {
+            socket_path: socket_path.to_path_buf(),
+            waited,
+        },
+        error => AutoStartError::Client(ClientError::Io(io::Error::new(
+            startup_error_kind(&error),
+            error.to_string(),
+        ))),
+    }
+}
+
+#[cfg(windows)]
 fn auto_start_error_from_startup(
     error: StartupError,
     binary_path: &Path,
@@ -241,7 +316,27 @@ fn startup_error_kind(error: &StartupError) -> io::ErrorKind {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn startup_error_kind(error: &StartupError) -> io::ErrorKind {
+    match error {
+        StartupError::InvalidPipeName { .. } | StartupError::InvalidMutexName { .. } => {
+            io::ErrorKind::InvalidInput
+        }
+        StartupError::MutexAccessDenied { .. } | StartupError::PipeAccessDenied { .. } => {
+            io::ErrorKind::PermissionDenied
+        }
+        StartupError::MutexTimeout { .. }
+        | StartupError::PipeBusy { .. }
+        | StartupError::StartupTimeout { .. } => io::ErrorKind::TimedOut,
+        StartupError::PipeNotFound { .. } | StartupError::PipeNoData { .. } => {
+            io::ErrorKind::NotFound
+        }
+        StartupError::Mutex { source, .. } | StartupError::PipeIo { source, .. } => source.kind(),
+        StartupError::Launcher { source } => source.kind(),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ensure_server_running_polling(
     socket_path: &Path,
     config: AutoStartConfig,
@@ -333,7 +428,7 @@ impl From<ClientError> for AutoStartError {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn ensure_server_running_with<ConnectFn, LaunchFn>(
     socket_path: &Path,
     timeout: Duration,
@@ -355,7 +450,7 @@ where
     )
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 fn ensure_server_running_with_probe<ConnectFn, LaunchFn, ProbeFn>(
     socket_path: &Path,
     timeout: Duration,
@@ -387,7 +482,7 @@ where
     )
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 fn wait_for_server<ConnectFn, ProbeFn>(
     socket_path: &Path,
     timeout: Duration,
@@ -426,7 +521,7 @@ where
     }
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(any(all(test, unix), not(any(unix, windows))))]
 fn is_transient_connect_error(error: &ClientError) -> bool {
     matches!(
         error,
@@ -440,6 +535,7 @@ fn is_transient_connect_error(error: &ClientError) -> bool {
     )
 }
 
+#[cfg(not(windows))]
 fn probe_server_readiness(connection: &mut Connection) -> Result<(), ClientError> {
     let response = connection.list_sessions(ListSessionsRequest {
         format: None,
@@ -455,7 +551,7 @@ fn probe_server_readiness(connection: &mut Connection) -> Result<(), ClientError
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn launch_hidden_daemon(
     socket_path: &Path,
     config: &AutoStartConfig,

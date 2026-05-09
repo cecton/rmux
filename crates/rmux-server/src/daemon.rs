@@ -328,7 +328,8 @@ fn windows_protocol_probe(endpoint: &LocalEndpoint) -> io::Result<bool> {
         };
         decoder.push_bytes(&buffer[..bytes_read]);
         match decoder.next_frame::<Response>() {
-            Ok(Some(_response)) => return Ok(true),
+            Ok(Some(Response::HasSession(_))) => return Ok(true),
+            Ok(Some(_response)) => return Ok(false),
             Ok(None) => continue,
             Err(RmuxError::IncompleteFrame { .. }) => continue,
             Err(_error) => return Ok(false),
