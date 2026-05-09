@@ -297,6 +297,9 @@ impl RequestHandler {
             Request::CapturePane(request) => {
                 HandleOutcome::response(self.handle_capture_pane(request).await)
             }
+            Request::PaneSnapshot(request) => {
+                HandleOutcome::response(self.handle_pane_snapshot(request).await)
+            }
             Request::ClearHistory(request) => {
                 HandleOutcome::response(self.handle_clear_history(request).await)
             }

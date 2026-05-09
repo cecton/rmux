@@ -21,10 +21,10 @@ pub use layout::{
 mod pane;
 pub use pane::{
     BreakPaneRequest, DisplayPanesRequest, JoinPaneRequest, KillPaneRequest, LastPaneRequest,
-    MovePaneRequest, PaneSplitSize, PipePaneRequest, ResizePaneRequest, RespawnPaneRequest,
-    SelectPaneAdjacentRequest, SelectPaneDirection, SelectPaneMarkRequest, SelectPaneRequest,
-    SendKeysExtRequest, SendKeysRequest, SplitWindowExtRequest, SplitWindowRequest,
-    SplitWindowTarget, SwapPaneDirection, SwapPaneRequest,
+    MovePaneRequest, PaneSnapshotRequest, PaneSplitSize, PipePaneRequest, ResizePaneRequest,
+    RespawnPaneRequest, SelectPaneAdjacentRequest, SelectPaneDirection, SelectPaneMarkRequest,
+    SelectPaneRequest, SendKeysExtRequest, SendKeysRequest, SplitWindowExtRequest,
+    SplitWindowRequest, SplitWindowTarget, SwapPaneDirection, SwapPaneRequest,
 };
 
 #[path = "request/window.rs"]
@@ -276,6 +276,8 @@ pub enum Request {
     SplitWindowExt(SplitWindowExtRequest),
     /// Internal SDK/daemon version and capability negotiation.
     Handshake(HandshakeRequest),
+    /// Internal daemon-backed structured pane snapshot endpoint.
+    PaneSnapshot(PaneSnapshotRequest),
 }
 
 impl Request {
@@ -329,6 +331,7 @@ impl Request {
             Self::LoadBuffer(_) => "load-buffer",
             Self::SaveBuffer(_) => "save-buffer",
             Self::CapturePane(_) => "capture-pane",
+            Self::PaneSnapshot(_) => "pane-snapshot",
             Self::DisplayMessage(_) => "display-message",
             Self::ResolveTarget(_) => "resolve-target",
             Self::RunShell(_) => "run-shell",

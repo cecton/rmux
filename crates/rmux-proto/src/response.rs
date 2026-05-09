@@ -35,7 +35,8 @@ pub use window::{
 mod pane;
 pub use pane::{
     BreakPaneResponse, DisplayPanesResponse, JoinPaneResponse, KillPaneResponse, LastPaneResponse,
-    ListPanesResponse, MovePaneResponse, PipePaneResponse, ResizePaneResponse, RespawnPaneResponse,
+    ListPanesResponse, MovePaneResponse, PaneSnapshotCell, PaneSnapshotCursor,
+    PaneSnapshotResponse, PipePaneResponse, ResizePaneResponse, RespawnPaneResponse,
     SelectPaneResponse, SendKeysResponse, SplitWindowResponse, SwapPaneResponse,
 };
 
@@ -223,6 +224,8 @@ pub enum Response {
     ResolveTarget(ResolveTargetResponse),
     /// Success payload for SDK/daemon version and capability negotiation.
     Handshake(HandshakeResponse),
+    /// Success payload for the daemon-backed pane snapshot endpoint.
+    PaneSnapshot(PaneSnapshotResponse),
 }
 
 impl Response {
@@ -308,6 +311,7 @@ impl Response {
             Self::MovePane(_) => "move-pane",
             Self::PipePane(_) => "pipe-pane",
             Self::RespawnPane(_) => "respawn-pane",
+            Self::PaneSnapshot(_) => "pane-snapshot",
             Self::LinkWindow(_) => "link-window",
             Self::UnlinkWindow(_) => "unlink-window",
             Self::ResolveTarget(_) => "resolve-target",

@@ -420,6 +420,150 @@ fn revision_round_trips_through_serde_and_with_revision_builder() {
 }
 
 #[test]
+fn visible_text_helpers_preserve_cell_payloads_verbatim() {
+    // The daemon's structured snapshot endpoint hands the SDK already-valid
+    // UTF-8 cell text — the rmux-core terminal parser is what folds raw PTY
+    // bytes into glyphs, surfacing `\u{FFFD}` for any invalid UTF-8 it sees.
+    // The SDK helpers must therefore propagate every code point in
+    // `cell.text` without applying any *additional* lossy transformations
+    // (other than the documented padding-skip and trailing-space trim).
+    let snapshot = PaneSnapshot::new(
+        4,
+        2,
+        vec![
+            cell("\u{FFFD}"),
+            cell("\u{200B}"),
+            cell("\u{1F389}"),
+            cell(" "),
+            styled_cell(
+                "界",
+                2,
+                PaneAttributes::EMPTY,
+                PaneColor::Default,
+                PaneColor::Default,
+                PaneColor::Default,
+            ),
+            PaneCell::padding(),
+            cell("\u{0008}"),
+            cell(" "),
+        ],
+        PaneCursor::default(),
+    )
+    .expect("valid 4x2 snapshot");
+
+    assert_eq!(
+        snapshot.visible_row_text(0).as_deref(),
+        Some("\u{FFFD}\u{200B}\u{1F389}")
+    );
+    assert_eq!(snapshot.visible_row_text(1).as_deref(), Some("界\u{0008}"));
+    assert_eq!(
+        snapshot.visible_text(),
+        "\u{FFFD}\u{200B}\u{1F389}\n界\u{0008}"
+    );
+    assert_eq!(snapshot.cell(0, 0).expect("cell 0,0").text(), "\u{FFFD}");
+    assert_eq!(snapshot.cell(1, 0).expect("cell 1,0").text(), "界");
+    assert!(snapshot.cell(1, 1).expect("padding cell").is_padding());
+    // Padding never reaches the rendered text but the owner column is the
+    // wide glyph's leading column.
+    assert_eq!(snapshot.owning_cell_col(1, 1), Some(0));
+}
+
+#[test]
+fn wide_glyph_spanning_row_boundary_preserves_owner_for_in_bounds_cells() {
+    // The daemon never emits a padding cell whose owner sits past the visible
+    // grid — wide glyphs on the right edge of the viewport are clipped at the
+    // owner column. We still assert the SDK helpers stay sane when only the
+    // leading column is present, since a misbehaving producer could omit the
+    // trailing padding column.
+    let snapshot = PaneSnapshot::new(
+        2,
+        1,
+        vec![
+            cell("a"),
+            styled_cell(
+                "界",
+                2,
+                PaneAttributes::EMPTY,
+                PaneColor::Default,
+                PaneColor::Default,
+                PaneColor::Default,
+            ),
+        ],
+        PaneCursor::default(),
+    )
+    .expect("valid 2x1 snapshot");
+
+    assert_eq!(snapshot.owning_cell_col(0, 0), Some(0));
+    assert_eq!(snapshot.owning_cell_col(0, 1), Some(1));
+    // Out-of-bounds queries return None rather than panicking, even when the
+    // wide glyph would otherwise project a padding column past the grid.
+    assert!(snapshot.cell(0, 2).is_none());
+    assert_eq!(snapshot.owning_cell_col(0, 2), None);
+    assert_eq!(snapshot.visible_row_text(0).as_deref(), Some("a界"));
+}
+
+#[test]
+fn visible_text_helpers_never_leak_padding_sentinel_text() {
+    // Padding cells carry the rmux-core sentinel space character verbatim. The
+    // helpers must drop the sentinel rather than splice it into the rendered
+    // visible text, even when there are multiple padding columns following a
+    // wide glyph (e.g. a 3-cell emoji).
+    let snapshot = PaneSnapshot::new(
+        5,
+        1,
+        vec![
+            styled_cell(
+                "🧪",
+                3,
+                PaneAttributes::EMPTY,
+                PaneColor::Default,
+                PaneColor::Default,
+                PaneColor::Default,
+            ),
+            PaneCell::padding(),
+            PaneCell::padding(),
+            cell("Z"),
+            cell(" "),
+        ],
+        PaneCursor::default(),
+    )
+    .expect("valid 5x1 snapshot");
+
+    let row = snapshot.visible_row_text(0).expect("row text");
+    assert_eq!(row, "🧪Z");
+    // The padding cells never reach the rendered text — even though they hold
+    // the sentinel space byte for raw round-tripping, the helpers gate them
+    // out via the explicit `is_padding()` filter.
+    assert!(!row.contains("  "));
+}
+
+#[test]
+fn raw_cell_text_round_trips_independently_of_visible_helpers() {
+    // The visible-text helpers are a *display* path: trailing-space trim and
+    // padding-skip. The raw `cell.text()` payload is the canonical wire form
+    // and must round-trip every byte — this guards against helpers later
+    // sneaking transformations onto the underlying cell payload.
+    let snapshot = PaneSnapshot::new(
+        4,
+        1,
+        vec![cell(" "), cell("\u{FFFD}"), cell(" "), cell(" ")],
+        PaneCursor::default(),
+    )
+    .expect("valid 4x1 snapshot");
+
+    // Visible helper trims trailing spaces and renders the replacement
+    // character verbatim.
+    assert_eq!(snapshot.visible_row_text(0).as_deref(), Some(" \u{FFFD}"));
+
+    // Raw cell access still surfaces every original payload byte, including
+    // the trailing spaces the visible helper trimmed.
+    let raw_row: Vec<&str> = (0..snapshot.cols)
+        .map(|col| snapshot.cell(0, col).expect("cell").text())
+        .collect();
+    assert_eq!(raw_row, vec![" ", "\u{FFFD}", " ", " "]);
+}
+
+#[test]
 fn sparse_serde_payloads_default_missing_fields() {
     let snapshot = serde_json::from_value::<PaneSnapshot>(serde_json::json!({}))
         .expect("sparse snapshot defaults");

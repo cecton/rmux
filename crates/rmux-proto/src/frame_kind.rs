@@ -1017,6 +1017,15 @@ pub const V1_FRAME_LEDGER: &[FrameLedgerEntry] = &[
         None,
         "v1 capability negotiation; pinned bincode tag 93.",
     ),
+    entry(
+        c2s(94),
+        FrameDirection::ClientToServer,
+        ACTIVE,
+        "PaneSnapshotRequest",
+        FrameFeature::Panes,
+        None,
+        "Daemon-backed structured pane snapshot endpoint; pinned bincode tag 94.",
+    ),
     // Reserved client→server slot. Removed values must be listed and never reused.
     entry(
         c2s(0x7FFE),
@@ -1757,6 +1766,15 @@ pub const V1_FRAME_LEDGER: &[FrameLedgerEntry] = &[
         None,
         "v1 capability negotiation; pinned bincode tag 79.",
     ),
+    entry(
+        s2c(80),
+        FrameDirection::ServerToClient,
+        ACTIVE,
+        "PaneSnapshotResponse",
+        FrameFeature::Panes,
+        None,
+        "Daemon-backed structured pane snapshot endpoint; pinned bincode tag 80.",
+    ),
     // Reserved server→client slot. Removed values must be listed and never reused.
     entry(
         s2c(0x7FFE),
@@ -1880,6 +1898,7 @@ pub const fn frame_kind_for_request(request: &Request) -> FrameKind {
         Request::ResolveTarget(_) => c2s(91),
         Request::SplitWindowExt(_) => c2s(92),
         Request::Handshake(_) => c2s(93),
+        Request::PaneSnapshot(_) => c2s(94),
     }
 }
 
@@ -1967,6 +1986,7 @@ pub const fn frame_kind_for_response(response: &Response) -> FrameKind {
         Response::UnlinkWindow(_) => s2c(77),
         Response::ResolveTarget(_) => s2c(78),
         Response::Handshake(_) => s2c(79),
+        Response::PaneSnapshot(_) => s2c(80),
     }
 }
 

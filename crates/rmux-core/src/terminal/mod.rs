@@ -4,11 +4,13 @@
 //! state machine with a [`Screen`] grid, providing a single place inside
 //! `rmux-core` that ingests PTY bytes. It is intentionally not part of the
 //! public crate surface: SDK-facing semantics continue to flow through
-//! [`Screen`], [`ScreenCellView`], and [`ScreenLineView`]. Future parser
-//! migrations (such as a `vt100 0.16` adapter) must be implemented behind
-//! this same boundary and must pass the parser-trace golden tests in
-//! `crates/rmux-core/tests/parser_traces.rs` before they are allowed to
-//! replace the existing `InputParser`-driven behavior.
+//! [`Screen`], [`ScreenCellView`], and [`ScreenLineView`]. Server-side live
+//! pane ingestion uses the public [`TerminalScreen`](crate::TerminalScreen)
+//! wrapper, which delegates to this crate-private parser pair. Future parser
+//! migrations must be implemented behind this same boundary and must pass the
+//! parser-trace golden tests in `crates/rmux-core/tests/parser_traces.rs`
+//! before they are allowed to replace the existing `InputParser`-driven
+//! behavior.
 //!
 //! [`ScreenCellView`]: crate::screen::ScreenCellView
 //! [`ScreenLineView`]: crate::screen::ScreenLineView
@@ -82,6 +84,7 @@ pub(crate) struct TerminalParser {
 impl TerminalParser {
     /// Builds a fresh parser/screen pair with the given geometry and
     /// scrollback limit.
+    #[must_use]
     pub(crate) fn new(size: TerminalSize, history_limit: usize) -> Self {
         Self {
             parser: InputParser::new(),
@@ -90,6 +93,7 @@ impl TerminalParser {
     }
 
     /// Returns a borrow of the underlying [`Screen`].
+    #[must_use]
     pub(crate) fn screen(&self) -> &Screen {
         &self.screen
     }
@@ -116,6 +120,7 @@ impl TerminalParser {
     }
 
     /// Returns the current parser progress state for diagnostics.
+    #[must_use]
     pub(crate) fn parser_state(&self) -> TerminalParserState {
         self.parser.state().into()
     }
@@ -127,11 +132,13 @@ impl TerminalParser {
     }
 
     /// Returns any bytes still buffered inside an incomplete parser state.
+    #[must_use]
     pub(crate) fn pending_bytes(&self) -> Vec<u8> {
         self.parser.pending_bytes()
     }
 
     /// Returns whether the parser ground timer would currently be running.
+    #[must_use]
     pub(crate) fn ground_timer_active(&self) -> bool {
         self.parser.ground_timer_active()
     }
@@ -144,6 +151,15 @@ impl TerminalParser {
     /// Resets the parser state machine to ground.
     pub(crate) fn reset_to_ground(&mut self) {
         self.parser.reset_to_ground();
+    }
+
+    /// Replaces the parser with a fresh ground-state instance.
+    ///
+    /// This preserves the current screen grid while discarding parser-local
+    /// state such as pending control bytes, replies, saved cursor state, and
+    /// current cell attributes.
+    pub(crate) fn reset_parser(&mut self) {
+        self.parser = InputParser::new();
     }
 }
 

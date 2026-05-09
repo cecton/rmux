@@ -20,13 +20,14 @@ use rmux_proto::{
 use tokio::time::sleep;
 
 const COMMAND_SURFACE_COUNT: usize = 75;
-const INTERNAL_REQUEST_COMMANDS: [&str; 19] = [
+const INTERNAL_REQUEST_COMMANDS: [&str; 20] = [
     "attach-session-ext",
     "attach-session-ext2",
     "control-mode",
     "detach-client-ext",
     "handshake",
     "new-session-ext",
+    "pane-snapshot",
     "resolve-target",
     "select-custom-layout",
     "select-pane-mark",

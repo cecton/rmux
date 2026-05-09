@@ -16,14 +16,14 @@ use std::time::Duration;
 use crate::handles::session::unexpected_response;
 use crate::transport::TransportClient;
 use crate::{
-    InfoSnapshot, PaneCell, PaneCursor, PaneExitState, PaneGlyph, PaneId, PaneInfo,
-    PaneProcessState, PaneRef, PaneSnapshot, Result, RmuxEndpoint, RmuxError, SessionId,
-    SessionInfo, TerminalSizeSpec, WindowId, WindowInfo,
+    InfoSnapshot, PaneAttributes, PaneCell, PaneColor, PaneCursor, PaneExitState, PaneGlyph,
+    PaneId, PaneInfo, PaneProcessState, PaneRef, PaneSnapshot, Result, RmuxEndpoint, RmuxError,
+    SessionId, SessionInfo, TerminalSizeSpec, WindowId, WindowInfo,
 };
 use rmux_proto::{
-    CapturePaneRequest, DisplayMessageRequest, ListPanesRequest, ListSessionsRequest,
-    ListWindowsRequest, Request, ResizePaneAdjustment, ResizePaneRequest, Response,
-    SendKeysExtRequest, SendKeysRequest, Target,
+    DisplayMessageRequest, ListPanesRequest, ListSessionsRequest, ListWindowsRequest,
+    PaneSnapshotCell, PaneSnapshotCursor, PaneSnapshotRequest, PaneSnapshotResponse, Request,
+    ResizePaneAdjustment, ResizePaneRequest, Response, SendKeysExtRequest, SendKeysRequest, Target,
 };
 
 const SESSION_INFO_FORMAT: &str = "#{session_name}\t#{session_id}";
@@ -127,16 +127,19 @@ impl Pane {
 
     /// Captures the live pane grid as a [`PaneSnapshot`].
     ///
-    /// The captured grid mirrors the daemon's terminal/transcript state for
-    /// this pane: dimensions come from the live `pane_width`/`pane_height`
-    /// fields, the cursor row/col/visibility/style come from the live
-    /// `cursor_*` fields, and the row-major cells come from a
-    /// `capture-pane -p` of the visible viewport. The snapshot's
-    /// [`revision`](PaneSnapshot::revision) is derived from the captured
-    /// pane state and changes whenever the daemon's view of the pane
-    /// mutates — output, resize, clear, exit. Stale slots resolve to a
-    /// default empty snapshot whose revision is `0`, distinct from any
-    /// prior live revision.
+    /// The captured grid is read directly from the daemon's live
+    /// rmux-core screen — the same in-memory grid that the crate-private
+    /// terminal parser feeds from PTY output — so dimensions, cursor
+    /// state, and per-cell glyph/attribute/colour data round-trip without
+    /// any `capture-pane -p` text reconstruction step. Wide-glyph padding
+    /// is preserved as padding cells in the row-major layout, raw bytes
+    /// that are not valid UTF-8 stay isolated to the cell text payload
+    /// rather than reaching helper output, and the daemon-derived
+    /// [`revision`](PaneSnapshot::revision) is non-zero for a live pane
+    /// and changes whenever any observable pane field mutates — output,
+    /// resize, clear, exit. Stale slots resolve to a default empty
+    /// snapshot whose revision is `0`, distinct from any prior live
+    /// revision.
     pub async fn snapshot(&self) -> Result<PaneSnapshot> {
         pane_snapshot(&self.transport, &self.target).await
     }
@@ -317,16 +320,72 @@ async fn pane_snapshot(client: &TransportClient, target: &PaneRef) -> Result<Pan
     }
 
     // The pane was listed at the start of this call, but the daemon can still
-    // close it between the existence check and the capture. Treat the
-    // already-closed protocol errors emitted in that window as a "vanished
-    // mid-snapshot" signal and degrade to a default snapshot, while genuine
-    // transport or protocol errors still propagate.
-    let details = fetch_live_details_or_default(client, target).await?;
-    let captured = match capture_pane_bytes_or_already_closed(client, target).await? {
-        Some(captured) => captured,
-        None => return Ok(PaneSnapshot::default()),
+    // close it between the existence check and the snapshot endpoint round
+    // trip. Treat the already-closed protocol errors emitted in that window as
+    // a "vanished mid-snapshot" signal and degrade to a default snapshot,
+    // while genuine transport or protocol errors still propagate.
+    match request_pane_snapshot(client, target).await {
+        Ok(response) => snapshot_from_response(response),
+        Err(error) if is_already_closed_error(&error, target) => Ok(PaneSnapshot::default()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn request_pane_snapshot(
+    client: &TransportClient,
+    target: &PaneRef,
+) -> Result<PaneSnapshotResponse> {
+    let response = client
+        .request(Request::PaneSnapshot(PaneSnapshotRequest {
+            target: target.into(),
+        }))
+        .await?;
+
+    match response {
+        Response::PaneSnapshot(response) => Ok(response),
+        response => Err(unexpected_response("pane-snapshot", response)),
+    }
+}
+
+fn snapshot_from_response(response: PaneSnapshotResponse) -> Result<PaneSnapshot> {
+    let cells = response.cells.into_iter().map(cell_from_wire).collect();
+    let cursor = cursor_from_wire(response.cursor);
+    let snapshot = PaneSnapshot {
+        cols: response.cols,
+        rows: response.rows,
+        cells,
+        cursor,
+        revision: response.revision,
     };
-    Ok(build_snapshot(&details, &captured))
+    snapshot.validate_shape().map_err(|error| {
+        parse_error(format!(
+            "pane-snapshot response had malformed row-major cell shape: {error}"
+        ))
+    })?;
+    Ok(snapshot)
+}
+
+fn cell_from_wire(cell: PaneSnapshotCell) -> PaneCell {
+    let glyph = if cell.padding {
+        PaneGlyph {
+            text: cell.text,
+            width: cell.width,
+            padding: true,
+        }
+    } else {
+        PaneGlyph::new(cell.text, cell.width)
+    };
+    PaneCell {
+        glyph,
+        attributes: PaneAttributes::from_bits(cell.attributes),
+        foreground: PaneColor::from_encoded(cell.fg),
+        background: PaneColor::from_encoded(cell.bg),
+        underline: PaneColor::from_encoded(cell.us),
+    }
+}
+
+fn cursor_from_wire(cursor: PaneSnapshotCursor) -> PaneCursor {
+    PaneCursor::new(cursor.row, cursor.col, cursor.visible, cursor.style)
 }
 
 async fn send_text(client: &TransportClient, target: &PaneRef, text: &str) -> Result<()> {
@@ -424,82 +483,6 @@ async fn request_resize_pane(
     match response {
         Response::ResizePane(_) => Ok(()),
         response => Err(unexpected_response("resize-pane", response)),
-    }
-}
-
-fn build_snapshot(details: &LiveDetails, captured: &[u8]) -> PaneSnapshot {
-    let cols = details.cols;
-    let rows = details.rows;
-    let cursor = PaneCursor::new(
-        details.cursor_y,
-        details.cursor_x,
-        details.cursor_visible,
-        details.cursor_style,
-    );
-    let cells = build_cells(captured, cols, rows);
-    let snapshot = PaneSnapshot {
-        cols,
-        rows,
-        cells,
-        cursor,
-        revision: 0,
-    };
-    let revision = compute_revision(&snapshot, details, captured);
-    snapshot.with_revision(revision)
-}
-
-fn build_cells(captured: &[u8], cols: u16, rows: u16) -> Vec<PaneCell> {
-    let cols_usize = usize::from(cols);
-    let rows_usize = usize::from(rows);
-    let total = cols_usize.saturating_mul(rows_usize);
-    let mut cells = Vec::with_capacity(total);
-    if cols_usize == 0 || rows_usize == 0 {
-        return cells;
-    }
-
-    let text = String::from_utf8_lossy(captured);
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if lines.last().is_some_and(|line| line.is_empty()) {
-        lines.pop();
-    }
-
-    for row in 0..rows_usize {
-        let raw_line = lines.get(row).copied().unwrap_or("");
-        let mut row_cells = Vec::with_capacity(cols_usize);
-        for ch in raw_line.chars().filter(|character| *character != '\r') {
-            if row_cells.len() == cols_usize {
-                break;
-            }
-            row_cells.push(PaneCell::new(PaneGlyph::new(ch.to_string(), 1)));
-        }
-        while row_cells.len() < cols_usize {
-            row_cells.push(PaneCell::blank());
-        }
-        cells.extend(row_cells);
-    }
-    cells
-}
-
-fn compute_revision(snapshot: &PaneSnapshot, details: &LiveDetails, captured: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    snapshot.cols.hash(&mut hasher);
-    snapshot.rows.hash(&mut hasher);
-    snapshot.cursor.row.hash(&mut hasher);
-    snapshot.cursor.col.hash(&mut hasher);
-    snapshot.cursor.visible.hash(&mut hasher);
-    snapshot.cursor.style.hash(&mut hasher);
-    captured.hash(&mut hasher);
-    details.pane_id.hash(&mut hasher);
-    details.dead.hash(&mut hasher);
-    details.dead_status.hash(&mut hasher);
-    details.dead_signal.hash(&mut hasher);
-    details.history_bytes.hash(&mut hasher);
-    details.history_size.hash(&mut hasher);
-    let raw = hasher.finish();
-    if raw == 0 {
-        0xFFFF_FFFF_FFFF_FFFF
-    } else {
-        raw
     }
 }
 
@@ -712,47 +695,6 @@ fn parse_details_line(line: &str) -> Result<LiveDetails> {
         output_sequence,
         current_path,
     })
-}
-
-async fn capture_pane_bytes_or_already_closed(
-    client: &TransportClient,
-    target: &PaneRef,
-) -> Result<Option<Vec<u8>>> {
-    match capture_pane_bytes(client, target).await {
-        Ok(captured) => Ok(Some(captured)),
-        Err(error) if is_already_closed_error(&error, target) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-async fn capture_pane_bytes(client: &TransportClient, target: &PaneRef) -> Result<Vec<u8>> {
-    let response = client
-        .request(Request::CapturePane(CapturePaneRequest {
-            target: target.into(),
-            start: None,
-            end: None,
-            print: true,
-            buffer_name: None,
-            alternate: false,
-            escape_ansi: false,
-            escape_sequences: false,
-            join_wrapped: false,
-            use_mode_screen: false,
-            preserve_trailing_spaces: true,
-            do_not_trim_spaces: true,
-            pending_input: false,
-            quiet: true,
-            start_is_absolute: false,
-            end_is_absolute: false,
-        }))
-        .await?;
-
-    match response {
-        Response::CapturePane(response) => {
-            Ok(response.output.map(|out| out.stdout).unwrap_or_default())
-        }
-        response => Err(unexpected_response("capture-pane", response)),
-    }
 }
 
 fn parse_session_line(line: &str) -> Result<ListedSession> {
@@ -994,95 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_pads_short_lines_with_blanks() {
-        let details = LiveDetails {
-            cols: 5,
-            rows: 2,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"hi\n");
-        assert_eq!(snapshot.cols, 5);
-        assert_eq!(snapshot.rows, 2);
-        assert_eq!(snapshot.cells.len(), 10);
-        assert_eq!(snapshot.cells[0].text(), "h");
-        assert_eq!(snapshot.cells[1].text(), "i");
-        assert_eq!(snapshot.cells[2].text(), " ");
-        assert_eq!(snapshot.cells[5].text(), " ");
-    }
-
-    #[test]
-    fn build_snapshot_truncates_overlong_lines() {
-        let details = LiveDetails {
-            cols: 3,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"abcdef");
-        assert_eq!(snapshot.cells.len(), 3);
-        assert_eq!(snapshot.cells[0].text(), "a");
-        assert_eq!(snapshot.cells[1].text(), "b");
-        assert_eq!(snapshot.cells[2].text(), "c");
-    }
-
-    #[test]
-    fn build_snapshot_handles_zero_dimensions() {
-        let details = LiveDetails::default();
-        let snapshot = build_snapshot(&details, b"");
-        assert_eq!(snapshot.cells.len(), 0);
-        assert!(snapshot.is_row_major_shape());
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_after_output() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let first = build_snapshot(&details, b"abcd");
-        let second = build_snapshot(&details, b"abce");
-        assert_ne!(first.revision, second.revision);
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_after_resize() {
-        let small = LiveDetails {
-            cols: 4,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let large = LiveDetails {
-            cols: 5,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let s1 = build_snapshot(&small, b"abcd");
-        let s2 = build_snapshot(&large, b"abcde");
-        assert_ne!(s1.revision, s2.revision);
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_after_exit() {
-        let alive = LiveDetails {
-            cols: 4,
-            rows: 1,
-            history_bytes: 4,
-            ..LiveDetails::default()
-        };
-        let dead = LiveDetails {
-            cols: 4,
-            rows: 1,
-            history_bytes: 4,
-            dead: true,
-            dead_status: Some(0),
-            ..LiveDetails::default()
-        };
-        let s1 = build_snapshot(&alive, b"abcd");
-        let s2 = build_snapshot(&dead, b"abcd");
-        assert_ne!(s1.revision, s2.revision);
-    }
-
-    #[test]
     fn parse_details_line_handles_empty_optional_fields() {
         let line = "%2\t1234\t0\t\t\t80\t24\t10\t5\t1\t0\t128\t4\t\t0\t0\t0\t/tmp";
         let details = parse_details_line(line).expect("parses");
@@ -1143,78 +996,6 @@ mod tests {
     fn parse_details_line_rejects_malformed_encoded_command() {
         let line = "%2\t1234\t0\t\t\t80\t24\t10\t5\t1\t0\t128\t4\tbad%XX\t1\t1\t1\t/tmp";
         assert!(parse_details_line(line).is_err());
-    }
-
-    #[test]
-    fn build_snapshot_strips_trailing_carriage_returns() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"abcd\r");
-        assert_eq!(snapshot.cells[0].text(), "a");
-        assert_eq!(snapshot.cells[1].text(), "b");
-        assert_eq!(snapshot.cells[2].text(), "c");
-        assert_eq!(snapshot.cells[3].text(), "d");
-    }
-
-    #[test]
-    fn build_snapshot_handles_lossy_utf8_without_panicking() {
-        let details = LiveDetails {
-            cols: 2,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"\xff\xfe");
-        assert_eq!(snapshot.cells.len(), 2);
-        assert!(snapshot.is_row_major_shape());
-    }
-
-    #[test]
-    fn build_snapshot_revision_is_stable_across_identical_inputs() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 1,
-            history_bytes: 2,
-            ..LiveDetails::default()
-        };
-        let first = build_snapshot(&details, b"abcd");
-        let second = build_snapshot(&details, b"abcd");
-        assert_eq!(first, second);
-        assert_eq!(first.revision, second.revision);
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_when_pane_id_at_slot_changes() {
-        let mut alpha = LiveDetails {
-            cols: 4,
-            rows: 1,
-            history_bytes: 0,
-            ..LiveDetails::default()
-        };
-        alpha.pane_id = Some(PaneId::new(7));
-        let mut beta = alpha.clone();
-        beta.pane_id = Some(PaneId::new(8));
-        let s1 = build_snapshot(&alpha, b"abcd");
-        let s2 = build_snapshot(&beta, b"abcd");
-        assert_ne!(
-            s1.revision, s2.revision,
-            "slot reuse with a different pane id must bump the revision"
-        );
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_with_cursor_movement() {
-        let mut details = LiveDetails {
-            cols: 4,
-            rows: 2,
-            ..LiveDetails::default()
-        };
-        let baseline = build_snapshot(&details, b"abcd\nefgh");
-        details.cursor_x = 2;
-        let moved = build_snapshot(&details, b"abcd\nefgh");
-        assert_ne!(baseline.revision, moved.revision);
     }
 
     #[test]
@@ -1288,69 +1069,6 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_blank_capture_preserves_grid_dimensions() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 3,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"");
-        assert_eq!(snapshot.cells.len(), 12);
-        assert!(snapshot.cells.iter().all(|cell| cell.text() == " "));
-        assert!(snapshot.is_row_major_shape());
-        assert_ne!(snapshot.revision, 0);
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_for_each_individual_dead_field() {
-        let alive = LiveDetails {
-            cols: 4,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let dead_no_status = LiveDetails {
-            dead: true,
-            ..alive.clone()
-        };
-        let dead_with_status = LiveDetails {
-            dead: true,
-            dead_status: Some(0),
-            ..alive.clone()
-        };
-        let dead_with_signal = LiveDetails {
-            dead: true,
-            dead_signal: Some(15),
-            ..alive.clone()
-        };
-        let s_alive = build_snapshot(&alive, b"abcd");
-        let s_dead_no_status = build_snapshot(&dead_no_status, b"abcd");
-        let s_dead_status = build_snapshot(&dead_with_status, b"abcd");
-        let s_dead_signal = build_snapshot(&dead_with_signal, b"abcd");
-        assert_ne!(s_alive.revision, s_dead_no_status.revision);
-        assert_ne!(s_dead_no_status.revision, s_dead_status.revision);
-        assert_ne!(s_dead_no_status.revision, s_dead_signal.revision);
-        assert_ne!(s_dead_status.revision, s_dead_signal.revision);
-    }
-
-    #[test]
-    fn build_snapshot_revision_changes_for_history_size_alone() {
-        let baseline = LiveDetails {
-            cols: 4,
-            rows: 1,
-            history_bytes: 0,
-            history_size: 0,
-            ..LiveDetails::default()
-        };
-        let only_size_changed = LiveDetails {
-            history_size: 17,
-            ..baseline.clone()
-        };
-        let s1 = build_snapshot(&baseline, b"abcd");
-        let s2 = build_snapshot(&only_size_changed, b"abcd");
-        assert_ne!(s1.revision, s2.revision);
-    }
-
-    #[test]
     fn derive_exit_state_treats_signal_zero_as_absent() {
         let details = LiveDetails {
             dead: true,
@@ -1416,48 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn build_cells_filters_embedded_carriage_returns_within_a_line() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"\rok\r");
-        assert_eq!(snapshot.cells.len(), 4);
-        assert_eq!(snapshot.cells[0].text(), "o");
-        assert_eq!(snapshot.cells[1].text(), "k");
-        assert_eq!(snapshot.cells[2].text(), " ");
-        assert_eq!(snapshot.cells[3].text(), " ");
-    }
-
-    #[test]
-    fn build_cells_strips_crlf_line_endings() {
-        let details = LiveDetails {
-            cols: 4,
-            rows: 2,
-            ..LiveDetails::default()
-        };
-        let snapshot = build_snapshot(&details, b"abcd\r\nefgh\r\n");
-        assert_eq!(snapshot.cells.len(), 8);
-        assert_eq!(snapshot.cells[0].text(), "a");
-        assert_eq!(snapshot.cells[3].text(), "d");
-        assert_eq!(snapshot.cells[4].text(), "e");
-        assert_eq!(snapshot.cells[7].text(), "h");
-    }
-
-    #[test]
-    fn build_snapshot_revision_differentiates_blank_capture_from_visible_capture() {
-        let details = LiveDetails {
-            cols: 3,
-            rows: 1,
-            ..LiveDetails::default()
-        };
-        let blank = build_snapshot(&details, b"");
-        let visible = build_snapshot(&details, b"abc");
-        assert_ne!(blank.revision, visible.revision);
-    }
-
-    #[test]
     fn parse_details_line_rejects_malformed_pane_id_prefix() {
         let line = "no-prefix\t1\t0\t\t\t1\t1\t0\t0\t1\t0\t0\t0\t\t0\t0\t0\t/tmp";
         assert!(parse_details_line(line).is_err());
@@ -1468,5 +1144,140 @@ mod tests {
         let line = "%1\t1\t0\t\t\t1\t1\t0\t0\t\t0\t0\t0\t\t0\t0\t0\t/tmp";
         let details = parse_details_line(line).expect("parses");
         assert!(details.cursor_visible);
+    }
+
+    fn wire_glyph_cell(text: &str, width: u8) -> PaneSnapshotCell {
+        PaneSnapshotCell {
+            text: text.to_owned(),
+            width,
+            padding: false,
+            attributes: 0,
+            fg: PaneColor::DEFAULT_ENCODING,
+            bg: PaneColor::DEFAULT_ENCODING,
+            us: PaneColor::DEFAULT_ENCODING,
+            link: 0,
+        }
+    }
+
+    fn wire_padding_cell() -> PaneSnapshotCell {
+        PaneSnapshotCell {
+            text: " ".to_owned(),
+            width: 0,
+            padding: true,
+            attributes: 0,
+            fg: PaneColor::DEFAULT_ENCODING,
+            bg: PaneColor::DEFAULT_ENCODING,
+            us: PaneColor::DEFAULT_ENCODING,
+            link: 0,
+        }
+    }
+
+    #[test]
+    fn cell_from_wire_preserves_padding_metadata() {
+        let cell = cell_from_wire(wire_padding_cell());
+        assert!(cell.is_padding());
+        assert_eq!(cell.glyph.width, 0);
+        // Padding markers travel with the rmux-core sentinel space text
+        // verbatim — the SDK never substitutes a different glyph payload.
+        assert_eq!(cell.glyph.text, " ");
+    }
+
+    #[test]
+    fn cell_from_wire_decodes_attributes_and_colors() {
+        let wire = PaneSnapshotCell {
+            text: "x".to_owned(),
+            width: 1,
+            padding: false,
+            attributes: PaneAttributes::BOLD.bits() | PaneAttributes::UNDERLINE.bits(),
+            fg: PaneColor::ansi(3).encoded(),
+            bg: PaneColor::indexed(200).encoded(),
+            us: PaneColor::rgb(10, 20, 30).encoded(),
+            link: 7,
+        };
+        let cell = cell_from_wire(wire);
+        assert!(!cell.is_padding());
+        assert_eq!(cell.text(), "x");
+        assert!(cell.attributes.contains(PaneAttributes::BOLD));
+        assert!(cell.attributes.contains(PaneAttributes::UNDERLINE));
+        assert_eq!(cell.foreground, PaneColor::ansi(3));
+        assert_eq!(cell.background, PaneColor::indexed(200));
+        assert_eq!(cell.underline, PaneColor::rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn cell_from_wire_keeps_wide_glyph_width() {
+        let cell = cell_from_wire(wire_glyph_cell("漢", 2));
+        assert!(!cell.is_padding());
+        assert_eq!(cell.glyph.width, 2);
+        assert_eq!(cell.text(), "漢");
+    }
+
+    #[test]
+    fn snapshot_from_response_carries_cells_cursor_and_revision() {
+        let response = PaneSnapshotResponse {
+            cols: 2,
+            rows: 1,
+            cells: vec![wire_glyph_cell("a", 1), wire_glyph_cell("b", 1)],
+            cursor: PaneSnapshotCursor {
+                row: 0,
+                col: 1,
+                visible: true,
+                style: 4,
+            },
+            revision: 0xCAFE_BEEF,
+        };
+        let snapshot = snapshot_from_response(response).expect("valid wire shape");
+        assert_eq!(snapshot.cols, 2);
+        assert_eq!(snapshot.rows, 1);
+        assert!(snapshot.is_row_major_shape());
+        assert_eq!(snapshot.cells[0].text(), "a");
+        assert_eq!(snapshot.cells[1].text(), "b");
+        assert_eq!(snapshot.cursor.col, 1);
+        assert_eq!(snapshot.cursor.style, 4);
+        assert!(snapshot.cursor.visible);
+        assert_eq!(snapshot.revision, 0xCAFE_BEEF);
+    }
+
+    #[test]
+    fn snapshot_from_response_handles_zero_dimensions() {
+        let response = PaneSnapshotResponse {
+            cols: 0,
+            rows: 0,
+            cells: Vec::new(),
+            cursor: PaneSnapshotCursor {
+                row: 0,
+                col: 0,
+                visible: true,
+                style: 0,
+            },
+            revision: 0,
+        };
+        let snapshot = snapshot_from_response(response).expect("valid zero-size wire shape");
+        assert!(snapshot.is_row_major_shape());
+        assert_eq!(snapshot.revision, 0);
+    }
+
+    #[test]
+    fn snapshot_from_response_rejects_malformed_wire_shape() {
+        let response = PaneSnapshotResponse {
+            cols: 2,
+            rows: 2,
+            cells: vec![wire_glyph_cell("a", 1)],
+            cursor: PaneSnapshotCursor {
+                row: 0,
+                col: 0,
+                visible: true,
+                style: 0,
+            },
+            revision: 1,
+        };
+
+        let error = snapshot_from_response(response).expect_err("shape mismatch is protocol error");
+        assert!(
+            error
+                .to_string()
+                .contains("pane-snapshot response had malformed row-major cell shape"),
+            "unexpected error: {error}"
+        );
     }
 }

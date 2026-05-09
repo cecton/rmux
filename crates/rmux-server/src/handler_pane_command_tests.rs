@@ -7,8 +7,8 @@ use crate::pane_io::AttachControl;
 use crate::pane_terminals::PaneLifecycleProcessState;
 use rmux_proto::{
     BreakPaneRequest, DisplayPanesRequest, KillPaneRequest, ListPanesRequest, ListWindowsRequest,
-    MovePaneRequest, NewSessionExtRequest, NewSessionRequest, OptionName, PaneTarget,
-    PipePaneRequest, RenameWindowRequest, Request, RespawnPaneRequest, ScopeSelector,
+    MovePaneRequest, NewSessionExtRequest, NewSessionRequest, OptionName, PaneSnapshotRequest,
+    PaneTarget, PipePaneRequest, RenameWindowRequest, Request, RespawnPaneRequest, ScopeSelector,
     SelectPaneRequest, SendKeysRequest, SessionName, SetOptionMode, SetOptionRequest,
     SplitDirection, SplitWindowExtRequest, SplitWindowRequest, SplitWindowTarget, TerminalSize,
     WindowTarget,
@@ -1385,4 +1385,308 @@ async fn pipe_pane_empty_command_closes_existing_pipe() {
             command: None,
         }))
         .await;
+}
+
+async fn snapshot_response(
+    handler: &RequestHandler,
+    target: PaneTarget,
+) -> rmux_proto::PaneSnapshotResponse {
+    match handler
+        .handle(Request::PaneSnapshot(PaneSnapshotRequest { target }))
+        .await
+    {
+        rmux_proto::Response::PaneSnapshot(response) => response,
+        other => panic!("expected pane-snapshot response, got {other:?}"),
+    }
+}
+
+fn collect_visible_text(response: &rmux_proto::PaneSnapshotResponse, row: usize) -> String {
+    let cols = usize::from(response.cols);
+    let start = row.saturating_mul(cols);
+    let end = start.saturating_add(cols).min(response.cells.len());
+    response.cells[start..end]
+        .iter()
+        .filter(|cell| !cell.padding)
+        .map(|cell| cell.text.as_str())
+        .collect::<String>()
+        .trim_end_matches(' ')
+        .to_owned()
+}
+
+#[tokio::test]
+async fn pane_snapshot_returns_live_screen_built_via_terminal_parser() {
+    // The hardening contract for the snapshot endpoint: cells must come from
+    // the live `Screen` fed by rmux-core's crate-private terminal parser, and
+    // not from a `String::from_utf8_lossy(capture-pane -p)` reconstruction.
+    // Feeding raw PTY-style bytes through the transcript parser and then
+    // observing the structured cells exercises that exact path end-to-end.
+    let handler = RequestHandler::new();
+    let alpha = session_name("snapshot-live");
+    let created = handler
+        .handle(Request::NewSessionExt(NewSessionExtRequest {
+            session_name: Some(alpha.clone()),
+            working_directory: None,
+            detached: true,
+            size: Some(TerminalSize { cols: 12, rows: 4 }),
+            environment: None,
+            group_target: None,
+            attach_if_exists: false,
+            detach_other_clients: false,
+            kill_other_clients: false,
+            flags: None,
+            window_name: None,
+            print_session_info: false,
+            print_format: None,
+            command: Some(vec![pipe_discard_command()]),
+        }))
+        .await;
+    assert!(matches!(created, rmux_proto::Response::NewSession(_)));
+
+    let pane_id = {
+        let state = handler.state.lock().await;
+        state
+            .sessions
+            .session(&alpha)
+            .and_then(|session| session.window_at(0))
+            .and_then(|window| window.pane(0))
+            .map(|pane| pane.id())
+            .expect("initial pane exists")
+    };
+
+    let target = PaneTarget::with_window(alpha.clone(), 0, 0);
+
+    let baseline = snapshot_response(&handler, target.clone()).await;
+    assert_eq!(baseline.cols, 12);
+    assert_eq!(baseline.rows, 4);
+    assert_eq!(baseline.cells.len(), 48);
+    assert_ne!(
+        baseline.revision, 0,
+        "live panes must carry a non-zero revision"
+    );
+
+    // Feed bytes that include a wide glyph and an SGR escape into the
+    // transcript. Both must reach the structured cells, since the parser is
+    // the only producer of the screen state behind the snapshot endpoint.
+    {
+        let mut state = handler.state.lock().await;
+        state
+            .append_bytes_to_runtime_pane_transcript(
+                &alpha,
+                pane_id,
+                "hi界\x1b[31mZ\x1b[0m".as_bytes(),
+            )
+            .expect("append bytes through parser");
+    }
+
+    let after = snapshot_response(&handler, target.clone()).await;
+    assert_eq!(after.cols, 12);
+    assert_eq!(after.rows, 4);
+    assert_eq!(after.cells.len(), 48);
+    assert_ne!(
+        after.revision, baseline.revision,
+        "fed bytes must change the snapshot revision",
+    );
+
+    // The first row must contain the parsed glyphs in column order, with a
+    // padding cell for the second column of the wide glyph.
+    let row0 = &after.cells[0..12];
+    assert_eq!(row0[0].text, "h");
+    assert_eq!(row0[0].width, 1);
+    assert!(!row0[0].padding);
+    assert_eq!(row0[1].text, "i");
+    assert_eq!(row0[2].text, "界");
+    assert_eq!(row0[2].width, 2);
+    assert!(!row0[2].padding);
+    assert!(
+        row0[3].padding,
+        "the column following a wide glyph must be padding"
+    );
+    assert_eq!(row0[3].width, 0);
+    assert_eq!(row0[4].text, "Z");
+    // The SGR sequence must paint the foreground colour onto the Z cell, not
+    // pollute the cell text with literal escape bytes.
+    assert!(
+        !row0[4].text.contains('\x1b'),
+        "raw escape bytes must never leak into cell text"
+    );
+    assert_ne!(
+        row0[4].fg, baseline.cells[4].fg,
+        "the parsed SGR must change the foreground colour for the Z cell"
+    );
+    assert_eq!(
+        collect_visible_text(&after, 0),
+        "hi界Z",
+        "padding-skipped row text must reflect the parsed glyphs"
+    );
+
+    // A subsequent capture without further bytes must yield the same cells
+    // and revision, confirming determinism for unchanged screen state.
+    let again = snapshot_response(&handler, target).await;
+    assert_eq!(again.revision, after.revision);
+    assert_eq!(again.cells, after.cells);
+}
+
+#[tokio::test]
+async fn pane_snapshot_invalid_target_returns_error_response() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("snapshot-missing");
+    let response = handler
+        .handle(Request::PaneSnapshot(PaneSnapshotRequest {
+            target: PaneTarget::with_window(alpha, 0, 0),
+        }))
+        .await;
+    match response {
+        rmux_proto::Response::Error(_) => {}
+        other => panic!("expected error response for missing session, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn pane_snapshot_folds_invalid_utf8_through_parser_not_raw_bytes() {
+    // Invalid UTF-8 bytes must be folded into U+FFFD by the rmux-core
+    // terminal parser *before* they reach the structured snapshot cells.
+    // The endpoint must not leak raw invalid bytes into `cell.text`, since
+    // there is no `String::from_utf8_lossy(capture-pane -p)` salvage step
+    // to clean them up later.
+    let handler = RequestHandler::new();
+    let alpha = session_name("snapshot-bad-utf8");
+    let created = handler
+        .handle(Request::NewSessionExt(NewSessionExtRequest {
+            session_name: Some(alpha.clone()),
+            working_directory: None,
+            detached: true,
+            size: Some(TerminalSize { cols: 8, rows: 2 }),
+            environment: None,
+            group_target: None,
+            attach_if_exists: false,
+            detach_other_clients: false,
+            kill_other_clients: false,
+            flags: None,
+            window_name: None,
+            print_session_info: false,
+            print_format: None,
+            command: Some(vec![pipe_discard_command()]),
+        }))
+        .await;
+    assert!(matches!(created, rmux_proto::Response::NewSession(_)));
+
+    let pane_id = {
+        let state = handler.state.lock().await;
+        state
+            .sessions
+            .session(&alpha)
+            .and_then(|session| session.window_at(0))
+            .and_then(|window| window.pane(0))
+            .map(|pane| pane.id())
+            .expect("initial pane exists")
+    };
+
+    {
+        let mut state = handler.state.lock().await;
+        // 0xFF is invalid as a UTF-8 leading byte, and 0xC3 0x28 is an
+        // invalid 2-byte sequence (continuation byte 0x28 is not 0x80..=0xBF).
+        // The parser must absorb both and emit replacement cells instead of
+        // leaking the raw bytes.
+        state
+            .append_bytes_to_runtime_pane_transcript(&alpha, pane_id, b"a\xFFb\xC3\x28c")
+            .expect("append invalid utf-8 through parser");
+    }
+
+    let target = PaneTarget::with_window(alpha, 0, 0);
+    let response = snapshot_response(&handler, target).await;
+    let row0 = &response.cells[0..usize::from(response.cols)];
+    for (col, cell) in row0.iter().enumerate() {
+        // Every cell text must be valid UTF-8 (a Vec<u8> from `text` is
+        // already constrained, but assert no cell carries raw bytes that
+        // happen to look like an escape or NUL).
+        assert!(
+            !cell.text.contains('\u{0000}'),
+            "col {col} text {:?} leaks NUL",
+            cell.text,
+        );
+        assert!(
+            cell.text.chars().all(|ch| ch != '\u{001B}'),
+            "col {col} text {:?} leaks escape byte",
+            cell.text,
+        );
+    }
+    let visible: String = row0
+        .iter()
+        .filter(|cell| !cell.padding)
+        .map(|cell| cell.text.as_str())
+        .collect::<String>()
+        .trim_end_matches(' ')
+        .to_owned();
+    assert!(
+        visible.contains('a') && visible.contains('b') && visible.contains('c'),
+        "valid bytes around the invalid sequences must survive: {visible:?}",
+    );
+    assert!(
+        visible.contains('\u{FFFD}'),
+        "invalid utf-8 must be folded by the parser into U+FFFD, got {visible:?}",
+    );
+}
+
+#[tokio::test]
+async fn pane_snapshot_revision_changes_after_clear_history() {
+    // Clearing scrollback is observable: history_size and history_bytes drop
+    // to zero. The revision must change so SDK consumers don't treat the
+    // post-clear screen as identical to the pre-clear one.
+    let handler = RequestHandler::new();
+    let alpha = session_name("snapshot-clear");
+    let created = handler
+        .handle(Request::NewSessionExt(NewSessionExtRequest {
+            session_name: Some(alpha.clone()),
+            working_directory: None,
+            detached: true,
+            size: Some(TerminalSize { cols: 4, rows: 2 }),
+            environment: None,
+            group_target: None,
+            attach_if_exists: false,
+            detach_other_clients: false,
+            kill_other_clients: false,
+            flags: None,
+            window_name: None,
+            print_session_info: false,
+            print_format: None,
+            command: Some(vec![pipe_discard_command()]),
+        }))
+        .await;
+    assert!(matches!(created, rmux_proto::Response::NewSession(_)));
+
+    let pane_id = {
+        let state = handler.state.lock().await;
+        state
+            .sessions
+            .session(&alpha)
+            .and_then(|session| session.window_at(0))
+            .and_then(|window| window.pane(0))
+            .map(|pane| pane.id())
+            .expect("initial pane exists")
+    };
+
+    {
+        let mut state = handler.state.lock().await;
+        // Pump enough lines to push older content into scrollback history.
+        state
+            .append_bytes_to_runtime_pane_transcript(&alpha, pane_id, b"L1\r\nL2\r\nL3\r\nL4\r\n")
+            .expect("append lines through parser");
+    }
+
+    let target = PaneTarget::with_window(alpha.clone(), 0, 0);
+    let before = snapshot_response(&handler, target.clone()).await;
+
+    let cleared = handler
+        .handle(Request::ClearHistory(rmux_proto::ClearHistoryRequest {
+            target: target.clone(),
+            reset_hyperlinks: false,
+        }))
+        .await;
+    assert!(matches!(cleared, rmux_proto::Response::ClearHistory(_)));
+
+    let after = snapshot_response(&handler, target).await;
+    assert_ne!(
+        before.revision, after.revision,
+        "clearing scrollback must change the snapshot revision",
+    );
 }

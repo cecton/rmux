@@ -270,6 +270,20 @@ pub struct SelectPaneMarkRequest {
     pub title: Option<String>,
 }
 
+/// Request payload for the daemon-backed pane snapshot endpoint.
+///
+/// Unlike [`CapturePaneRequest`](crate::CapturePaneRequest), which returns a
+/// pre-rendered byte stream of the visible viewport, this request asks the
+/// daemon to expose its live in-memory grid as structured cells. The daemon
+/// reads the cells directly from the rmux-core screen that is fed by its
+/// crate-private terminal parser, so there is no `String::from_utf8_lossy`
+/// reconstruction step on either side of the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSnapshotRequest {
+    /// The exact pane target whose visible viewport should be captured.
+    pub target: PaneTarget,
+}
+
 /// Request payload for `send-keys`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendKeysRequest {
