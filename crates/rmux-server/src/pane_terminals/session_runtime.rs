@@ -128,8 +128,11 @@ impl HandlerState {
         let _ = self.attached_submitted_rows.remove(session_name);
         self.auto_named_windows
             .retain(|(tracked_session, _)| tracked_session != session_name);
-        let removed_terminals = self.terminals.remove_session(session_name);
-        if let Some(panes) = removed_terminals.as_ref() {
+        let mut removed_terminals = self.terminals.remove_session(session_name);
+        if let Some(panes) = removed_terminals.as_mut() {
+            for terminal in panes.values_mut() {
+                terminal.terminate_with_bounded_grace();
+            }
             for pane_id in panes.keys() {
                 self.remove_pane_lifecycle(*pane_id);
             }

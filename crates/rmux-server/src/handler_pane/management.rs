@@ -525,6 +525,18 @@ impl RequestHandler {
                 &socket_path,
                 Some(self.pane_alert_callback()),
                 Some(self.pane_exit_callback()),
+                |state, replaced| {
+                    let queued = prepare_lifecycle_event(
+                        state,
+                        &LifecycleEvent::PaneExited {
+                            target: replaced.target.clone(),
+                            pane_id: Some(replaced.pane_id),
+                            window_id: Some(replaced.window_id),
+                            window_name: Some(replaced.window_name.clone()),
+                        },
+                    );
+                    self.emit_prepared(queued);
+                },
             ) {
                 Ok(response) => Response::RespawnPane(response),
                 Err(error) => Response::Error(ErrorResponse { error }),

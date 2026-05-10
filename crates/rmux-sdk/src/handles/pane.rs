@@ -11,6 +11,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::events::streams::{PaneLineStream, PaneOutputStart, PaneOutputStream};
@@ -19,13 +20,14 @@ use crate::transport::TransportClient;
 use crate::{
     ArmedWait, CollectedPaneOutput, InfoSnapshot, PaneAttributes, PaneCell, PaneColor, PaneCursor,
     PaneExitState, PaneGlyph, PaneId, PaneInfo, PaneProcessState, PaneRef, PaneSnapshot,
-    PaneTextMatch, Result, RmuxEndpoint, RmuxError, SessionId, SessionInfo, TerminalSizeSpec,
-    WindowId, WindowInfo,
+    PaneTextMatch, ProcessSpec, Result, RmuxEndpoint, RmuxError, SessionId, SessionInfo,
+    TerminalSizeSpec, WindowId, WindowInfo,
 };
 use rmux_proto::{
-    DisplayMessageRequest, ListPanesRequest, ListSessionsRequest, ListWindowsRequest,
-    PaneSnapshotCell, PaneSnapshotCursor, PaneSnapshotRequest, PaneSnapshotResponse, Request,
-    ResizePaneAdjustment, ResizePaneRequest, Response, SendKeysExtRequest, SendKeysRequest, Target,
+    DisplayMessageRequest, KillPaneRequest, ListPanesRequest, ListSessionsRequest,
+    ListWindowsRequest, PaneSnapshotCell, PaneSnapshotCursor, PaneSnapshotRequest,
+    PaneSnapshotResponse, Request, ResizePaneAdjustment, ResizePaneRequest, RespawnPaneRequest,
+    Response, SendKeysExtRequest, SendKeysRequest, Target,
 };
 
 const SESSION_INFO_FORMAT: &str = "#{session_name}\t#{session_id}";
@@ -36,6 +38,35 @@ const PANE_INFO_FORMAT: &str =
      \t#{cursor_shape}\t#{history_bytes}\t#{history_size}\t#{pane_start_command}\
      \t#{pane_lifecycle_generation}\t#{pane_lifecycle_revision}\t#{pane_output_sequence}\
      \t#{pane_start_path}";
+
+/// Result of consuming a [`Pane`] handle with [`Pane::close`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PaneCloseOutcome {
+    /// The daemon killed the addressed pane.
+    Closed {
+        /// The pane target consumed by the close call.
+        target: PaneRef,
+        /// Whether the pane removal also destroyed its window.
+        window_destroyed: bool,
+    },
+    /// The addressed pane was already absent by the time close ran.
+    AlreadyClosed {
+        /// The stale target consumed by the close call.
+        target: PaneRef,
+    },
+}
+
+/// Process and policy fields for [`Pane::respawn`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PaneRespawnOptions {
+    /// Whether a running pane should be killed before respawning.
+    pub kill: bool,
+    /// Optional working-directory override for the new process.
+    pub start_directory: Option<PathBuf>,
+    /// Process argv and per-spawn environment overrides.
+    pub process: ProcessSpec,
+}
 
 /// Opaque handle for one daemon pane slot.
 ///
@@ -327,6 +358,36 @@ impl Pane {
     /// geometry. No pane identity is cached by this handle.
     pub async fn resize(&self, size: TerminalSizeSpec) -> Result<()> {
         resize_to_size(&self.transport, &self.target, size).await
+    }
+
+    /// Consumes this handle and kills the addressed pane through the daemon.
+    ///
+    /// A stale handle is treated as an idempotent no-op and returns
+    /// [`PaneCloseOutcome::AlreadyClosed`]. Dropping a [`Pane`] handle remains
+    /// inert; this consuming method is the SDK operation that explicitly
+    /// closes the pane slot and its process.
+    pub async fn close(self) -> Result<PaneCloseOutcome> {
+        close_pane(&self.transport, self.target).await
+    }
+
+    /// Consumes this handle without sending any daemon request.
+    ///
+    /// Detaching an SDK handle is equivalent to dropping it: the addressed
+    /// pane slot, process, subscriptions owned elsewhere, and daemon state are
+    /// left untouched. Use [`Self::close`] when the pane itself should be
+    /// killed.
+    pub fn detach(self) {}
+
+    /// Respawns the process in this pane slot through the daemon.
+    ///
+    /// The addressed slot and stable `%N`/[`PaneId`] are preserved by the
+    /// daemon. `options.kill` mirrors `respawn-pane -k`: a running process is
+    /// rejected unless that flag is set, while a dead pane can be respawned
+    /// without it. The daemon resets the pane transcript, parser state,
+    /// scrollback, and retained output before exposing output from the fresh
+    /// lifecycle generation.
+    pub async fn respawn(&self, options: PaneRespawnOptions) -> Result<PaneRef> {
+        respawn_pane(&self.transport, &self.target, options).await
     }
 }
 
@@ -639,6 +700,48 @@ async fn request_resize_pane(
     match response {
         Response::ResizePane(_) => Ok(()),
         response => Err(unexpected_response("resize-pane", response)),
+    }
+}
+
+async fn close_pane(client: &TransportClient, target: PaneRef) -> Result<PaneCloseOutcome> {
+    let response = client
+        .request(Request::KillPane(KillPaneRequest {
+            target: (&target).into(),
+            kill_all_except: false,
+        }))
+        .await;
+
+    match response {
+        Ok(Response::KillPane(response)) => Ok(PaneCloseOutcome::Closed {
+            target: response.target.into(),
+            window_destroyed: response.window_destroyed,
+        }),
+        Ok(response) => Err(unexpected_response("kill-pane", response)),
+        Err(error) if is_already_closed_pane_error(&error, &target) => {
+            Ok(PaneCloseOutcome::AlreadyClosed { target })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn respawn_pane(
+    client: &TransportClient,
+    target: &PaneRef,
+    options: PaneRespawnOptions,
+) -> Result<PaneRef> {
+    let response = client
+        .request(Request::RespawnPane(RespawnPaneRequest {
+            target: target.into(),
+            kill: options.kill,
+            start_directory: options.start_directory,
+            environment: options.process.environment,
+            command: options.process.command,
+        }))
+        .await?;
+
+    match response {
+        Response::RespawnPane(response) => Ok(response.target.into()),
+        response => Err(unexpected_response("respawn-pane", response)),
     }
 }
 

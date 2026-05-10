@@ -17,8 +17,9 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use rmux_sdk::{
-    EnsureSession, EnsureSessionPolicy, Result, Rmux, RmuxBuilder, RmuxEndpoint, RmuxError,
-    Session, SessionName, Window, WindowCloseOutcome, WindowPane,
+    EnsureSession, EnsureSessionPolicy, Pane, PaneCloseOutcome, PaneRespawnOptions, Result, Rmux,
+    RmuxBuilder, RmuxEndpoint, RmuxError, Session, SessionName, Window, WindowCloseOutcome,
+    WindowPane,
 };
 
 fn assert_send<T: Send>() {}
@@ -33,6 +34,10 @@ fn assert_debug<T: std::fmt::Debug>() {}
 fn assert_builder_records_endpoint(builder: RmuxBuilder, expected: &RmuxEndpoint) {
     assert_eq!(builder.configured_endpoint(), expected);
     assert_eq!(builder.build().endpoint(), expected);
+}
+
+fn assert_pane_detach_consumes_handle(pane: Pane) {
+    pane.detach();
 }
 
 /// Compile-only gate for the SDK's static bounds and expected derives.
@@ -63,6 +68,25 @@ fn _assert_bounds() {
     assert_sync::<Window>();
     assert_static::<Window>();
     assert_debug::<Window>();
+
+    assert_send::<Pane>();
+    assert_sync::<Pane>();
+    assert_static::<Pane>();
+    assert_debug::<Pane>();
+
+    assert_send::<PaneCloseOutcome>();
+    assert_sync::<PaneCloseOutcome>();
+    assert_static::<PaneCloseOutcome>();
+    assert_clone::<PaneCloseOutcome>();
+    assert_eq_hash::<PaneCloseOutcome>();
+    assert_debug::<PaneCloseOutcome>();
+
+    assert_send::<PaneRespawnOptions>();
+    assert_sync::<PaneRespawnOptions>();
+    assert_static::<PaneRespawnOptions>();
+    assert_default::<PaneRespawnOptions>();
+    assert_clone::<PaneRespawnOptions>();
+    assert_debug::<PaneRespawnOptions>();
 
     assert_send::<WindowPane>();
     assert_sync::<WindowPane>();

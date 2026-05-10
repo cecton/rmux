@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::RequestHandler;
 use crate::pane_io::AttachControl;
 use crate::pane_terminals::PaneLifecycleProcessState;
+use rmux_core::LifecycleEvent;
 use rmux_proto::{
     BreakPaneRequest, DisplayPanesRequest, KillPaneRequest, ListPanesRequest, ListWindowsRequest,
     MovePaneRequest, NewSessionExtRequest, NewSessionRequest, OptionName, PaneSnapshotRequest,
@@ -793,6 +794,143 @@ async fn respawn_pane_with_kill_flag_applies_directory_environment_and_command()
 }
 
 #[tokio::test]
+async fn respawn_pane_with_kill_flag_emits_replaced_pane_exit() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("respawn-exit");
+    create_session(&handler, &alpha).await;
+    let target = PaneTarget::with_window(alpha.clone(), 0, 0);
+    let (pane_id, previous_generation) = {
+        let state = handler.state.lock().await;
+        let pane = state
+            .sessions
+            .session(&alpha)
+            .and_then(|session| session.window_at(0))
+            .and_then(|window| window.pane(0))
+            .expect("initial pane exists");
+        let lifecycle = state
+            .pane_lifecycle(pane.id())
+            .expect("initial lifecycle exists");
+        (pane.id(), lifecycle.generation)
+    };
+    let mut lifecycle_events = handler.subscribe_lifecycle_events();
+
+    let response = handler
+        .handle(Request::RespawnPane(RespawnPaneRequest {
+            target: target.clone(),
+            kill: true,
+            start_directory: None,
+            environment: None,
+            command: Some(vec![pipe_discard_command()]),
+        }))
+        .await;
+    assert!(matches!(response, rmux_proto::Response::RespawnPane(_)));
+
+    let queued = timeout(Duration::from_millis(500), lifecycle_events.recv())
+        .await
+        .expect("forced respawn should emit pane-exited")
+        .expect("lifecycle channel should stay open");
+    match queued.event {
+        LifecycleEvent::PaneExited {
+            target: event_target,
+            pane_id: Some(event_pane_id),
+            window_id: Some(_),
+            ..
+        } => {
+            assert_eq!(event_target, target);
+            assert_eq!(event_pane_id, pane_id.as_u32());
+        }
+        event => panic!("expected pane-exited for replaced process, got {event:?}"),
+    }
+
+    let state = handler.state.lock().await;
+    let pane = state
+        .sessions
+        .session(&alpha)
+        .and_then(|session| session.window_at(0))
+        .and_then(|window| window.pane(0))
+        .expect("respawned pane exists");
+    assert_eq!(pane.id(), pane_id);
+    let lifecycle = state
+        .pane_lifecycle(pane_id)
+        .expect("respawned lifecycle exists");
+    assert!(lifecycle.generation > previous_generation);
+    assert!(matches!(
+        lifecycle.process,
+        PaneLifecycleProcessState::Running { .. }
+    ));
+    assert!(lifecycle.exit_state.is_none());
+}
+
+#[tokio::test]
+async fn respawn_pane_preserves_id_and_clears_parser_state_before_new_output() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("respawn-reset");
+    create_session(&handler, &alpha).await;
+    let target = PaneTarget::with_window(alpha.clone(), 0, 0);
+    let pane_id = {
+        let state = handler.state.lock().await;
+        state
+            .sessions
+            .session(&alpha)
+            .and_then(|session| session.window_at(0))
+            .and_then(|window| window.pane(0))
+            .map(|pane| pane.id())
+            .expect("initial pane exists")
+    };
+
+    {
+        let mut state = handler.state.lock().await;
+        state
+            .append_bytes_to_runtime_pane_transcript(&alpha, pane_id, b"OLD_MARKER")
+            .expect("append old output");
+    }
+    let before = snapshot_response(&handler, target.clone()).await;
+    assert!(all_visible_text(&before).contains("OLD_MARKER"));
+    let (previous_generation, previous_revision, previous_output_sequence) = {
+        let state = handler.state.lock().await;
+        let lifecycle = state
+            .pane_lifecycle(pane_id)
+            .expect("initial lifecycle exists");
+        (
+            lifecycle.generation,
+            lifecycle.revision,
+            lifecycle.output_sequence,
+        )
+    };
+
+    let response = handler
+        .handle(Request::RespawnPane(RespawnPaneRequest {
+            target: target.clone(),
+            kill: true,
+            start_directory: None,
+            environment: None,
+            command: Some(vec![pipe_discard_command()]),
+        }))
+        .await;
+    assert!(matches!(response, rmux_proto::Response::RespawnPane(_)));
+
+    let after = snapshot_response(&handler, target).await;
+    assert!(
+        !all_visible_text(&after).contains("OLD_MARKER"),
+        "respawn must discard the old transcript and parser screen before fresh output"
+    );
+    let state = handler.state.lock().await;
+    let pane = state
+        .sessions
+        .session(&alpha)
+        .and_then(|session| session.window_at(0))
+        .and_then(|window| window.pane(0))
+        .expect("respawned pane exists");
+    assert_eq!(pane.id(), pane_id);
+    let lifecycle = state
+        .pane_lifecycle(pane_id)
+        .expect("respawned lifecycle exists");
+    assert!(lifecycle.generation > previous_generation);
+    assert!(lifecycle.revision > previous_revision);
+    assert!(lifecycle.output_sequence > previous_output_sequence);
+}
+
+#[tokio::test]
 async fn display_panes_uses_the_default_select_pane_template() {
     let handler = RequestHandler::new();
     let alpha = session_name("alpha");
@@ -1411,6 +1549,13 @@ fn collect_visible_text(response: &rmux_proto::PaneSnapshotResponse, row: usize)
         .collect::<String>()
         .trim_end_matches(' ')
         .to_owned()
+}
+
+fn all_visible_text(response: &rmux_proto::PaneSnapshotResponse) -> String {
+    (0..usize::from(response.rows))
+        .map(|row| collect_visible_text(response, row))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[tokio::test]

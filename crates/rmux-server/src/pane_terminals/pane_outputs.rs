@@ -324,6 +324,7 @@ impl HandlerState {
             .or_default()
             .insert(pane_id, pane_output.clone());
         let generation = self.advance_pane_output_generation(session_name, pane_id);
+        pane_output.set_generation(generation);
         if let Some(dead_panes) = self.dead_panes.get_mut(session_name) {
             let _ = dead_panes.remove(&pane_id);
         }
@@ -385,8 +386,9 @@ impl HandlerState {
             .entry(pane_id)
             .or_insert_with(pane_output_channel)
             .clone();
-        pane_output.clear_retained();
         let generation = self.advance_pane_output_generation(session_name, pane_id);
+        pane_output.set_generation(generation);
+        pane_output.clear_retained();
         if let Some(dead_panes) = self.dead_panes.get_mut(session_name) {
             let _ = dead_panes.remove(&pane_id);
         }
@@ -536,7 +538,7 @@ impl HandlerState {
             .get(&pane_id)
             .copied()
             .unwrap_or(0)
-            .wrapping_add(1);
+            .saturating_add(1);
         generations.insert(pane_id, next);
         next
     }

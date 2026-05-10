@@ -543,7 +543,7 @@ impl HandlerState {
             self.clear_marked_pane_if_id(*pane_id);
         }
 
-        let removed_terminals = match self
+        let mut removed_terminals = match self
             .terminals
             .remove_pane_batch(&runtime_session_name, committed_outcome.removed_pane_ids())
         {
@@ -566,6 +566,7 @@ impl HandlerState {
             )?;
             return Err(error);
         }
+        terminate_removed_terminals(&mut removed_terminals);
         self.remove_pane_lifecycles(committed_outcome.removed_pane_ids());
 
         self.synchronize_session_group_from(&session_name)?;
@@ -601,6 +602,7 @@ impl HandlerState {
         socket_path: &Path,
         pane_alert_callback: Option<PaneAlertCallback>,
         pane_exit_callback: Option<PaneExitCallback>,
+        mut on_replaced_active_pane: impl FnMut(&mut Self, &KilledPaneHookContext),
     ) -> Result<RespawnPaneResponse, RmuxError> {
         let RespawnPaneRequest {
             target,
@@ -614,7 +616,7 @@ impl HandlerState {
         let pane_index = target.pane_index();
         let runtime_session_name =
             self.runtime_session_name_for_window(&session_name, window_index);
-        let (session_id, window_id, pane_id, pane_geometry, requested_cwd) = {
+        let (session_id, window_id, window_name, pane_id, pane_geometry, requested_cwd) = {
             let session = self
                 .sessions
                 .session(&session_name)
@@ -634,17 +636,20 @@ impl HandlerState {
             (
                 session.id(),
                 window.id(),
+                window.name().unwrap_or_default().to_owned(),
                 pane.id(),
                 pane_terminal_geometry_for_session(session, &self.options, pane.geometry()),
                 session.cwd(),
             )
         };
 
-        if self
-            .terminals
-            .pane_is_alive(&runtime_session_name, pane_id, window_index, pane_index)?
-            && !kill
-        {
+        let pane_was_alive = self.terminals.pane_is_alive(
+            &runtime_session_name,
+            pane_id,
+            window_index,
+            pane_index,
+        )?;
+        if pane_was_alive && !kill {
             return Err(RmuxError::Server(
                 "pane still active; use -k to force respawn".to_owned(),
             ));
@@ -678,7 +683,20 @@ impl HandlerState {
         if let Some(pipe) = self.remove_pane_pipe(&runtime_session_name, pane_id) {
             pipe.stop();
         }
-        let _ = self.terminals.remove_pane(&runtime_session_name, pane_id);
+        if let Some(mut terminal) = self.terminals.remove_pane(&runtime_session_name, pane_id) {
+            terminal.terminate_with_bounded_grace();
+            if pane_was_alive {
+                on_replaced_active_pane(
+                    self,
+                    &KilledPaneHookContext {
+                        target: target.clone(),
+                        pane_id: pane_id.as_u32(),
+                        window_id: window_id.as_u32(),
+                        window_name,
+                    },
+                );
+            }
+        }
         self.terminals.insert_pane(
             runtime_session_name.clone(),
             pane_id,
@@ -714,6 +732,14 @@ impl HandlerState {
         self.sync_pane_lifecycle_dimensions_for_session(&session_name);
 
         Ok(RespawnPaneResponse { target })
+    }
+}
+
+fn terminate_removed_terminals(
+    terminals: &mut std::collections::HashMap<PaneId, crate::pane_terminal_process::PaneTerminal>,
+) {
+    for terminal in terminals.values_mut() {
+        terminal.terminate_with_bounded_grace();
     }
 }
 

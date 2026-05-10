@@ -46,7 +46,10 @@ pub use events::{
     PaneOutputStart, PaneOutputStream, PanePermissionScope, PaneRecentOutput,
 };
 pub use extract::{CollectedPaneOutput, PaneTextMatch};
-pub use handles::{Pane, Rmux, RmuxBuilder, Session, Window, WindowCloseOutcome, WindowPane};
+pub use handles::{
+    Pane, PaneCloseOutcome, PaneRespawnOptions, Rmux, RmuxBuilder, Session, Window,
+    WindowCloseOutcome, WindowPane,
+};
 pub use info::{InfoSnapshot, PaneExitState, PaneInfo, PaneProcessState, SessionInfo, WindowInfo};
 pub use input::{
     DetachChord, DetachDetector, DetachOutcome, KeyCode, KeyConversionError, KeyEvent, KeyModifiers,

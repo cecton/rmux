@@ -5,7 +5,7 @@ use rmux_core::events::{
 use rmux_core::PaneId;
 use rmux_proto::{AttachShellCommand, TerminalSize};
 use rmux_pty::PtyMaster;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, Notify};
 
@@ -199,6 +199,7 @@ pub(crate) struct PaneOutputSender {
 
 struct PaneOutputInner {
     ring: Mutex<OutputRing>,
+    generation: AtomicU64,
     notify: Notify,
 }
 
@@ -216,17 +217,38 @@ impl std::fmt::Debug for PaneOutputSender {
 }
 
 impl PaneOutputSender {
+    #[cfg(test)]
     pub(crate) fn send(&self, bytes: Vec<u8>) -> u64 {
-        let sequence = {
-            let mut ring = self
-                .inner
-                .ring
-                .lock()
-                .expect("pane output ring mutex must not be poisoned");
-            ring.push(bytes).sequence()
-        };
-        self.inner.notify.notify_waiters();
-        sequence
+        self.push_for_generation(None, bytes)
+            .expect("unguarded pane output send should always be accepted")
+    }
+
+    pub(crate) fn send_for_generation(
+        &self,
+        generation: Option<u64>,
+        bytes: Vec<u8>,
+    ) -> Option<u64> {
+        self.push_for_generation(generation, bytes)
+    }
+
+    pub(crate) fn accepts_generation(&self, generation: Option<u64>) -> bool {
+        generation_matches(self.current_generation(), generation)
+    }
+
+    pub(crate) fn set_generation(&self, generation: u64) {
+        // Keep generation switches ordered with generation-guarded ring
+        // pushes, so stale readers cannot pass a check from the old process
+        // generation and then publish after a respawn.
+        let _ring = self
+            .inner
+            .ring
+            .lock()
+            .expect("pane output ring mutex must not be poisoned");
+        self.inner.generation.store(generation, Ordering::SeqCst);
+    }
+
+    pub(crate) fn current_generation(&self) -> u64 {
+        self.inner.generation.load(Ordering::SeqCst)
     }
 
     pub(crate) fn subscribe(&self) -> PaneOutputReceiver {
@@ -262,6 +284,29 @@ impl PaneOutputSender {
             .expect("pane output ring mutex must not be poisoned")
             .clear_retained();
         self.inner.notify.notify_waiters();
+    }
+
+    fn push_for_generation(&self, generation: Option<u64>, bytes: Vec<u8>) -> Option<u64> {
+        let sequence = {
+            let mut ring = self
+                .inner
+                .ring
+                .lock()
+                .expect("pane output ring mutex must not be poisoned");
+            if !generation_matches(self.current_generation(), generation) {
+                return None;
+            }
+            ring.push(bytes).sequence()
+        };
+        self.inner.notify.notify_waiters();
+        Some(sequence)
+    }
+}
+
+fn generation_matches(current: u64, generation: Option<u64>) -> bool {
+    match generation {
+        None => true,
+        Some(generation) => current == generation,
     }
 }
 
@@ -314,7 +359,48 @@ pub(crate) fn pane_output_channel_with_limits(
     PaneOutputSender {
         inner: Arc::new(PaneOutputInner {
             ring: Mutex::new(OutputRing::new(event_capacity, recent_byte_capacity)),
+            generation: AtomicU64::new(0),
             notify: Notify::new(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_generation_output_is_not_published() {
+        let sender = pane_output_channel_with_limits(4, 64);
+        sender.set_generation(1);
+        let mut receiver = sender.subscribe();
+
+        assert_eq!(
+            sender.send_for_generation(Some(1), b"old".to_vec()),
+            Some(0)
+        );
+        let Some(OutputCursorItem::Event(event)) = receiver.try_recv() else {
+            panic!("receiver should see the accepted generation");
+        };
+        assert_eq!(event.sequence(), 0);
+        assert_eq!(event.bytes(), b"old");
+
+        sender.set_generation(2);
+        sender.clear_retained();
+        assert_eq!(sender.send_for_generation(Some(1), b"stale".to_vec()), None);
+        assert!(
+            receiver.try_recv().is_none(),
+            "stale generation output must not be retained or delivered"
+        );
+
+        assert_eq!(
+            sender.send_for_generation(Some(2), b"fresh".to_vec()),
+            Some(1)
+        );
+        let Some(OutputCursorItem::Event(event)) = receiver.try_recv() else {
+            panic!("receiver should see the fresh generation");
+        };
+        assert_eq!(event.sequence(), 1);
+        assert_eq!(event.bytes(), b"fresh");
     }
 }
