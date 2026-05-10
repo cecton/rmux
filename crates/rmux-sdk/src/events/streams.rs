@@ -2,7 +2,7 @@
 //!
 //! The two opaque streams in this module — [`PaneOutputStream`] for raw
 //! bytes plus sequence/lag notices, and [`PaneLineStream`] for rendered
-//! UTF-8 lines — are constructed through fallible [`Pane`] methods and
+//! UTF-8 lines — are constructed through fallible [`crate::Pane`] methods and
 //! drive the daemon's `SubscribePaneOutput`, `PaneOutputCursor`, and
 //! `UnsubscribePaneOutput` endpoints internally. They never expose
 //! [`rmux_proto::PaneOutputSubscriptionId`] to SDK callers.
@@ -61,9 +61,9 @@
 //! itself, so dropping an unfinished stream is always safe.
 //!
 //! Wrapping the line stream around the byte stream means the inner byte
-//! stream still owns its own [`crate::transport::DropGuard`] and emits
-//! its own unsubscribe — there is exactly one unsubscribe per
-//! subscription regardless of which wrapper is dropped.
+//! stream still owns its own transport drop guard and emits its own
+//! unsubscribe — there is exactly one unsubscribe per subscription
+//! regardless of which wrapper is dropped.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -85,7 +85,7 @@ const POLL_MAX_DELAY: Duration = Duration::from_millis(50);
 /// Where a pane-output stream should anchor its cursor at subscription time.
 ///
 /// Mirrors the daemon's own
-/// [`PaneOutputSubscriptionStart`](rmux_proto::PaneOutputSubscriptionStart)
+/// [`rmux_proto::PaneOutputSubscriptionStart`]
 /// vocabulary as a SDK-owned enum so callers do not depend on
 /// `rmux-proto` directly.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]

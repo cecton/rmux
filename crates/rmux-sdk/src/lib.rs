@@ -1,4 +1,6 @@
 #![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::invalid_codeblock_attributes)]
 #![forbid(unsafe_code)]
 
 //! Public daemon-backed RMUX SDK scaffolding.
@@ -10,9 +12,51 @@
 //! `rmux-sdk` is a public integration peer of `rmux-client` and must not
 //! depend on `rmux-client`, `rmux-core`, `rmux-server`, or `rmux-pty` as
 //! normal dependencies. The authoritative identity newtypes
-//! (`SessionName`, `SessionId`, `WindowId`, `PaneId`) live in
+//! ([`SessionName`], [`SessionId`], [`WindowId`], [`PaneId`]) live in
 //! `rmux-proto` and are re-exported here so SDK users import them through
 //! `rmux_sdk` without ever depending on those internal crates.
+//!
+//! # Inert quickstart
+//!
+//! The shortest legal SDK program records intent without contacting a
+//! daemon. The doctest below executes in `cargo test --workspace --doc`
+//! and exercises the same surface as `examples/quickstart.rs`:
+//!
+//! ```
+//! use std::time::Duration;
+//!
+//! use rmux_sdk::{
+//!     EnsureSession, EnsureSessionPolicy, ProcessSpec, Rmux, RmuxEndpoint, SessionName,
+//!     TerminalSizeSpec,
+//! };
+//!
+//! let rmux = Rmux::builder()
+//!     .default_endpoint()
+//!     .default_timeout(Duration::from_secs(5))
+//!     .build();
+//! assert!(matches!(rmux.endpoint(), RmuxEndpoint::Default));
+//! assert_eq!(
+//!     rmux.configured_default_timeout(),
+//!     Some(Duration::from_secs(5)),
+//! );
+//!
+//! let session = SessionName::new("quickstart").expect("valid session name");
+//! let ensure = EnsureSession::named(session)
+//!     .policy(EnsureSessionPolicy::CreateOrReuse)
+//!     .detached(true)
+//!     .size(TerminalSizeSpec::new(120, 32))
+//!     .process(ProcessSpec {
+//!         command: Some(vec!["bash".to_owned(), "-l".to_owned()]),
+//!         environment: None,
+//!     });
+//! assert_eq!(ensure.configured_policy(), EnsureSessionPolicy::CreateOrReuse);
+//! ```
+//!
+//! See the crate public overview (`crates/rmux-sdk/src/lib.rs`) for the public
+//! requirements, examples, errors, platform notes, cargo features, and
+//! license posture. The public overview is assigned by
+//! `cargo run -p xtask -- feature-inventory` and verified by
+//! `cargo run -p xtask -- feature-inventory --check`.
 
 pub mod bootstrap;
 pub mod command;

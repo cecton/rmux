@@ -1,19 +1,34 @@
 #![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 #![forbid(unsafe_code)]
 
 //! Repository maintenance command entry point.
+//!
+//! The xtask binary owns repository-wide automation that does not belong
+//! inside the published `rmux` binary. The current surface is:
+//!
+//! - `help` &mdash; print top-level help and exit.
+//! - `feature-inventory` &mdash; regenerate the v1 public public overview files from their
+//!   canonical sources in [`feature_inventory`].
+//! - `feature-inventory --check` &mdash; fail if any generated public overview drifts from
+//!   the canonical source. Idempotent: running `feature-inventory` then
+//!   `feature-inventory --check` must always succeed.
 
 use std::env;
 use std::process::ExitCode;
+
+mod feature_inventory;
 
 const HELP: &str = "\
 RMUX repository tasks
 
 Usage:
-    cargo run -p xtask -- --help
+    cargo run -p xtask -- <command> [args]
 
 Commands:
-    --help, -h, help    Print this help text
+    --help, -h, help            Print this help text.
+    feature-inventory                      Regenerate v1 public overview files from xtask/assets/.
+    feature-inventory --check              Fail if any generated public overview drifts from canon.
 ";
 
 fn main() -> ExitCode {
@@ -22,6 +37,7 @@ fn main() -> ExitCode {
             print!("{HELP}");
             ExitCode::SUCCESS
         }
+        Ok(Command::Feature inventory { check }) => run_feature_inventory(check),
         Err(message) => {
             eprintln!("{message}");
             eprintln!();
@@ -31,9 +47,34 @@ fn main() -> ExitCode {
     }
 }
 
+fn run_feature_inventory(check: bool) -> ExitCode {
+    let mode = if check {
+        feature_inventory::Mode::Check
+    } else {
+        feature_inventory::Mode::Write
+    };
+    let repo_root = feature_inventory::repo_root_from_manifest_dir();
+    match feature_inventory::run(mode, &repo_root) {
+        Ok(report) => {
+            for path in &report.changed {
+                println!("feature-inventory: wrote {}", path.display());
+            }
+            for path in &report.unchanged {
+                println!("feature-inventory: unchanged {}", path.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("xtask feature-inventory failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
     Help,
+    Feature inventory { check: bool },
 }
 
 fn parse_args<I>(args: I) -> Result<Command, String>
@@ -46,15 +87,28 @@ where
         return Ok(Command::Help);
     };
 
-    if let Some(extra) = args.next() {
-        return Err(format!(
-            "unexpected xtask argument after {command}: {extra}"
-        ));
-    }
-
     match command.as_str() {
-        "--help" | "-h" | "help" => Ok(Command::Help),
-        _ => Err(format!("unknown xtask command: {command}")),
+        "--help" | "-h" | "help" => {
+            if let Some(extra) = args.next() {
+                return Err(format!(
+                    "unexpected xtask argument after {command}: {extra}"
+                ));
+            }
+            Ok(Command::Help)
+        }
+        "feature-inventory" => {
+            let mut check = false;
+            for extra in args {
+                match extra.as_str() {
+                    "--check" => check = true,
+                    other => {
+                        return Err(format!("unknown feature-inventory argument: {other}"));
+                    }
+                }
+            }
+            Ok(Command::Feature inventory { check })
+        }
+        other => Err(format!("unknown xtask command: {other}")),
     }
 }
 
@@ -83,10 +137,31 @@ mod tests {
     }
 
     #[test]
-    fn extra_argument_is_an_error() {
+    fn extra_argument_to_help_is_an_error() {
         assert_eq!(
             parse_args(["--help", "build"]).expect_err("extra argument errors"),
             "unexpected xtask argument after --help: build"
+        );
+    }
+
+    #[test]
+    fn feature_inventory_defaults_to_write_mode() {
+        assert_eq!(parse_args(["feature-inventory"]), Ok(Command::Feature inventory { check: false }));
+    }
+
+    #[test]
+    fn feature_inventory_check_flag_selects_check_mode() {
+        assert_eq!(
+            parse_args(["feature-inventory", "--check"]),
+            Ok(Command::Feature inventory { check: true })
+        );
+    }
+
+    #[test]
+    fn feature_inventory_rejects_unknown_argument() {
+        assert_eq!(
+            parse_args(["feature-inventory", "--bogus"]).expect_err("unknown feature-inventory flag errors"),
+            "unknown feature-inventory argument: --bogus"
         );
     }
 }

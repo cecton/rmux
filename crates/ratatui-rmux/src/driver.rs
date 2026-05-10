@@ -22,7 +22,7 @@
 //!
 //! `state.rs`'s render-time invariants depend on this contract:
 //! every change a widget can see must already be folded into the
-//! [`PaneState`] before [`crate::widget::PaneWidget::render`] runs.
+//! [`PaneState`] before [`crate::widget::PaneWidget`]'s `render` runs.
 
 use rmux_sdk::{Pane, PaneEvent, PaneOutputChunk, PaneSnapshot, Result};
 
