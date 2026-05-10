@@ -4,5 +4,11 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+# Direct dependencies are intentionally minimal: `rmux-sdk` is the only
+# RMUX integration boundary, and `ratatui-core` is the only ratatui
+# surface this crate links against. The recorded production budget lives
+# in `spec/runtime.yaml` and is enforced by `tests/budget.rs` plus
+# `scripts/ratatui-rmux-budget.sh`.
 [dependencies]
+ratatui-core = { version = "0.1.0", default-features = false, features = ["std"] }
 rmux-sdk = { path = "../rmux-sdk" }
