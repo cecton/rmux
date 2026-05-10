@@ -212,6 +212,15 @@ impl PendingCall {
             return Ok(());
         }
 
+        // The pane-output cursor endpoint is the one daemon RPC that resolves
+        // to two distinct response variants: a regular cursor batch
+        // (`pane-output-cursor`) or a lag notice (`pane-output-lag`) when the
+        // server-side receiver detected a sequence gap. Both are valid
+        // replies for the same `pane-output-cursor` request.
+        if self.command_name == "pane-output-cursor" && actual == "pane-output-lag" {
+            return Ok(());
+        }
+
         Err(TransportFailure::mismatched_response(
             self.command_name,
             actual,

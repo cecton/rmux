@@ -13,6 +13,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
+use crate::events::streams::{PaneLineStream, PaneOutputStart, PaneOutputStream};
 use crate::handles::session::unexpected_response;
 use crate::transport::TransportClient;
 use crate::{
@@ -105,6 +106,59 @@ impl Pane {
     /// it never closes panes, sessions, processes, or the daemon.
     pub async fn wait_for(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
         crate::wait::wait_for_bytes(self, bytes.as_ref().to_vec()).await
+    }
+
+    /// Subscribes to the live raw pane output as a typed byte stream.
+    ///
+    /// Setup performs one `subscribe-pane-output` round trip and is
+    /// fallible: a stale pane slot, a transport failure, or a refused
+    /// daemon capability propagates as [`RmuxError`].
+    ///
+    /// The returned [`PaneOutputStream`] preserves arbitrary bytes,
+    /// pairs every chunk with the daemon's monotonic per-pane sequence,
+    /// and surfaces any retained-output gaps as
+    /// [`PaneOutputChunk::Lag`](crate::PaneOutputChunk::Lag) without ever
+    /// converting raw bytes through `String::from_utf8_lossy`. Dropping
+    /// the stream emits exactly one best-effort
+    /// `unsubscribe-pane-output` request; if the unsubscribe is refused,
+    /// late, or the transport is already gone the drop never closes the
+    /// pane, its window/session/process, or the daemon itself.
+    pub async fn output_stream(&self) -> Result<PaneOutputStream> {
+        self.output_stream_starting_at(PaneOutputStart::Now).await
+    }
+
+    /// Subscribes to the live raw pane output, anchoring the cursor at
+    /// the requested start position.
+    ///
+    /// See [`Self::output_stream`] for setup, drop, and lag semantics.
+    pub async fn output_stream_starting_at(
+        &self,
+        start: PaneOutputStart,
+    ) -> Result<PaneOutputStream> {
+        PaneOutputStream::open(self.transport.clone(), self.target.to_proto(), start).await
+    }
+
+    /// Subscribes to the live pane output rendered into UTF-8 lines.
+    ///
+    /// Setup is fallible (see [`Self::output_stream`]). Beyond the raw
+    /// stream the line stream applies two well-isolated transformations:
+    /// it splits on the LF byte `b'\n'` and runs each completed line
+    /// through `String::from_utf8_lossy`, replacing every byte that is
+    /// not valid UTF-8 with the Unicode replacement character `U+FFFD`.
+    /// Bytes between LFs stay buffered until the next LF arrives, and a
+    /// daemon-side lag drops the in-flight partial line; both
+    /// transformations are documented in detail on the
+    /// [`crate::events::streams`] module. Drop semantics match
+    /// [`Self::output_stream`].
+    pub async fn line_stream(&self) -> Result<PaneLineStream> {
+        self.line_stream_starting_at(PaneOutputStart::Now).await
+    }
+
+    /// Subscribes to rendered output lines, anchoring the cursor at the
+    /// requested start position.
+    pub async fn line_stream_starting_at(&self, start: PaneOutputStart) -> Result<PaneLineStream> {
+        let inner = self.output_stream_starting_at(start).await?;
+        Ok(PaneLineStream::wrap(inner))
     }
 
     /// Returns the live daemon pane identity for this slot, when it is

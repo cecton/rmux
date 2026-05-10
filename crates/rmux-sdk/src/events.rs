@@ -13,8 +13,13 @@
 //! producer, and the daemon-side ordering rules documented on
 //! [`PaneEvent`](types::PaneEvent) match that producer's behaviour.
 
+pub mod streams;
 pub mod types;
 
+pub use streams::{
+    PaneLagNotice, PaneLineItem, PaneLineStream, PaneOutputChunk, PaneOutputStart,
+    PaneOutputStream, PaneRecentOutput,
+};
 pub use types::{
     PaneCommandStatus, PaneCommandSummary, PaneDisconnectReason, PaneEvent, PaneExitReason,
     PaneNotification, PanePermissionScope,

@@ -41,7 +41,8 @@ pub use ensure::{EnsureSession, EnsureSessionPolicy};
 pub use error::{CollectError, Result, RmuxError};
 pub use events::{
     PaneCommandStatus, PaneCommandSummary, PaneDisconnectReason, PaneEvent, PaneExitReason,
-    PaneNotification, PanePermissionScope,
+    PaneLagNotice, PaneLineItem, PaneLineStream, PaneNotification, PaneOutputChunk,
+    PaneOutputStart, PaneOutputStream, PanePermissionScope, PaneRecentOutput,
 };
 pub use handles::{Pane, Rmux, RmuxBuilder, Session, Window, WindowCloseOutcome, WindowPane};
 pub use info::{InfoSnapshot, PaneExitState, PaneInfo, PaneProcessState, SessionInfo, WindowInfo};
