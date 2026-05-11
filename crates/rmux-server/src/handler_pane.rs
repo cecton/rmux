@@ -38,6 +38,7 @@ use pane_io_encoding::{
     expand_send_key_tokens, prepare_pane_input_write, write_bytes_to_target,
 };
 pub(super) use pane_prompt_input::decode_prompt_input_event;
+pub(in crate::handler) use pane_snapshot::PaneSnapshotRevisionRegistry;
 
 use rmux_proto::{PaneTarget, RmuxError, Target};
 

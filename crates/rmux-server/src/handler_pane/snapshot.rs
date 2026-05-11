@@ -1,4 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -82,7 +82,7 @@ impl RequestHandler {
             )
         };
 
-        let revision = compute_revision(
+        let fingerprint = compute_snapshot_fingerprint(
             cols,
             rows,
             &cells,
@@ -92,6 +92,7 @@ impl RequestHandler {
             history_bytes,
             pane_id.as_u32(),
         );
+        let revision = self.assign_pane_snapshot_revision(pane_id, fingerprint);
 
         // Notification revisions are anchored to the same `u64` value the
         // snapshot endpoint returns in `PaneSnapshotResponse.revision`. The
@@ -131,6 +132,14 @@ impl RequestHandler {
         coalescers.observe(pane_id, revision, now)
     }
 
+    fn assign_pane_snapshot_revision(&self, pane_id: PaneId, fingerprint: u64) -> u64 {
+        let mut revisions = self
+            .pane_snapshot_revisions
+            .lock()
+            .expect("pane snapshot revision mutex must not be poisoned");
+        revisions.revision_for(pane_id, fingerprint)
+    }
+
     /// Drains a pending pane snapshot revision that is now eligible to be
     /// emitted, if any. Used by polling notification consumers.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -159,8 +168,13 @@ impl RequestHandler {
             .pane_snapshot_coalescers
             .lock()
             .expect("pane snapshot coalescer mutex must not be poisoned");
+        let mut revisions = self
+            .pane_snapshot_revisions
+            .lock()
+            .expect("pane snapshot revision mutex must not be poisoned");
         for pane_id in pane_ids {
             coalescers.forget(*pane_id);
+            revisions.forget(*pane_id);
         }
     }
 }
@@ -228,7 +242,7 @@ fn blank_cell() -> PaneSnapshotCell {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compute_revision(
+fn compute_snapshot_fingerprint(
     cols: u16,
     rows: u16,
     cells: &[PaneSnapshotCell],
@@ -264,6 +278,44 @@ fn compute_revision(
         0xFFFF_FFFF_FFFF_FFFF
     } else {
         raw
+    }
+}
+
+#[derive(Debug, Default)]
+pub(in crate::handler) struct PaneSnapshotRevisionRegistry {
+    panes: HashMap<PaneId, PaneSnapshotRevisionState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PaneSnapshotRevisionState {
+    fingerprint: u64,
+    revision: u64,
+}
+
+impl PaneSnapshotRevisionRegistry {
+    fn revision_for(&mut self, pane_id: PaneId, fingerprint: u64) -> u64 {
+        let Some(state) = self.panes.get_mut(&pane_id) else {
+            self.panes.insert(
+                pane_id,
+                PaneSnapshotRevisionState {
+                    fingerprint,
+                    revision: 1,
+                },
+            );
+            return 1;
+        };
+
+        if state.fingerprint == fingerprint {
+            return state.revision;
+        }
+
+        state.fingerprint = fingerprint;
+        state.revision = state.revision.saturating_add(1);
+        state.revision
+    }
+
+    fn forget(&mut self, pane_id: PaneId) {
+        self.panes.remove(&pane_id);
     }
 }
 
@@ -375,46 +427,103 @@ mod tests {
     }
 
     #[test]
-    fn compute_revision_is_never_zero_for_default_inputs() {
+    fn compute_snapshot_fingerprint_is_never_zero_for_default_inputs() {
         let cursor = snapshot_cursor(0, 0);
-        let revision = compute_revision(0, 0, &[], &cursor, 0, 0, 0, 0);
-        assert_ne!(revision, 0);
+        let fingerprint = compute_snapshot_fingerprint(0, 0, &[], &cursor, 0, 0, 0, 0);
+        assert_ne!(fingerprint, 0);
     }
 
     #[test]
-    fn compute_revision_changes_with_each_observable_field() {
+    fn compute_snapshot_fingerprint_changes_with_each_observable_field() {
         let cursor = snapshot_cursor(0, 0);
-        let baseline = compute_revision(80, 24, &[], &cursor, 0, 0, 0, 1);
+        let baseline = compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 1);
 
         // Each observable input must influence the revision. We do not assert
         // exact deltas (which would couple to the hash internals); only that
         // the revision value moves when one input changes.
-        assert_ne!(baseline, compute_revision(81, 24, &[], &cursor, 0, 0, 0, 1));
-        assert_ne!(baseline, compute_revision(80, 25, &[], &cursor, 0, 0, 0, 1));
-        assert_ne!(baseline, compute_revision(80, 24, &[], &cursor, 1, 0, 0, 1));
-        assert_ne!(baseline, compute_revision(80, 24, &[], &cursor, 0, 1, 0, 1));
-        assert_ne!(baseline, compute_revision(80, 24, &[], &cursor, 0, 0, 1, 1));
-        assert_ne!(baseline, compute_revision(80, 24, &[], &cursor, 0, 0, 0, 2));
         assert_ne!(
             baseline,
-            compute_revision(80, 24, &[], &snapshot_cursor(1, 0), 0, 0, 0, 1)
+            compute_snapshot_fingerprint(81, 24, &[], &cursor, 0, 0, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_revision(80, 24, &[baseline_cell()], &cursor, 0, 0, 0, 1)
+            compute_snapshot_fingerprint(80, 25, &[], &cursor, 0, 0, 0, 1)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 1, 0, 0, 1)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 1, 0, 1)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 1, 1)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 2)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &snapshot_cursor(1, 0), 0, 0, 0, 1)
+        );
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[baseline_cell()], &cursor, 0, 0, 0, 1)
         );
     }
 
     #[test]
-    fn compute_revision_is_stable_for_identical_inputs() {
-        // The revision is hashed; for two captures of the exact same observable
-        // state, the revision must compare equal so consumers can use it as a
-        // "did anything change?" signal without spurious mismatches.
+    fn compute_snapshot_fingerprint_is_stable_for_identical_inputs() {
+        // The internal fingerprint is stable for two captures of the exact
+        // same observable state; the public revision counter is assigned from
+        // this fingerprint by `PaneSnapshotRevisionRegistry`.
         let cursor = snapshot_cursor(2, 5);
         let cells = vec![baseline_cell(); 4];
-        let a = compute_revision(80, 24, &cells, &cursor, 7, 1, 100, 9);
-        let b = compute_revision(80, 24, &cells, &cursor, 7, 1, 100, 9);
+        let a = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 7, 1, 100, 9);
+        let b = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 7, 1, 100, 9);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pane_snapshot_revisions_are_monotone_for_state_transitions() {
+        let mut registry = PaneSnapshotRevisionRegistry::default();
+        let pane_id = PaneId::new(3);
+
+        assert_eq!(registry.revision_for(pane_id, 10), 1);
+        assert_eq!(
+            registry.revision_for(pane_id, 10),
+            1,
+            "unchanged observable state must not advance revision",
+        );
+        assert_eq!(
+            registry.revision_for(pane_id, 20),
+            2,
+            "changed observable state must advance revision",
+        );
+        assert_eq!(
+            registry.revision_for(pane_id, 10),
+            3,
+            "returning to prior content is still a new transition",
+        );
+    }
+
+    #[test]
+    fn pane_snapshot_revision_forget_resets_only_retired_panes() {
+        let mut registry = PaneSnapshotRevisionRegistry::default();
+        let first = PaneId::new(4);
+        let second = PaneId::new(5);
+
+        assert_eq!(registry.revision_for(first, 10), 1);
+        assert_eq!(registry.revision_for(second, 99), 1);
+        assert_eq!(registry.revision_for(first, 11), 2);
+
+        registry.forget(first);
+
+        assert_eq!(registry.revision_for(first, 10), 1);
+        assert_eq!(registry.revision_for(second, 100), 2);
     }
 
     #[tokio::test]

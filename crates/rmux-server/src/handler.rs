@@ -82,6 +82,7 @@ pub(in crate::handler) use lifecycle_support::after_hook_format_values;
 pub(in crate::handler) use lifecycle_support::prepare_lifecycle_event;
 pub(crate) use lifecycle_support::QueuedLifecycleEvent;
 use option_support::option_value_u32;
+use pane_support::PaneSnapshotRevisionRegistry;
 use subscription_support::OutputSubscriptionState;
 pub(in crate::handler) use target_support::{
     active_session_target, active_window_target, fallback_current_target,
@@ -116,6 +117,7 @@ pub(crate) struct RequestHandler {
     subscriptions: Arc<StdMutex<OutputSubscriptionState>>,
     sdk_waits: Arc<StdMutex<SdkWaitState>>,
     pane_snapshot_coalescers: Arc<StdMutex<PaneSnapshotCoalescerRegistry>>,
+    pane_snapshot_revisions: Arc<StdMutex<PaneSnapshotRevisionRegistry>>,
     #[cfg(test)]
     cleanup_on_drop: bool,
     #[cfg(test)]
@@ -142,6 +144,7 @@ impl Clone for RequestHandler {
             subscriptions: self.subscriptions.clone(),
             sdk_waits: self.sdk_waits.clone(),
             pane_snapshot_coalescers: self.pane_snapshot_coalescers.clone(),
+            pane_snapshot_revisions: self.pane_snapshot_revisions.clone(),
             #[cfg(test)]
             cleanup_on_drop: false,
             #[cfg(test)]
@@ -169,6 +172,7 @@ pub(crate) struct WeakRequestHandler {
     subscriptions: Weak<StdMutex<OutputSubscriptionState>>,
     sdk_waits: Weak<StdMutex<SdkWaitState>>,
     pane_snapshot_coalescers: Weak<StdMutex<PaneSnapshotCoalescerRegistry>>,
+    pane_snapshot_revisions: Weak<StdMutex<PaneSnapshotRevisionRegistry>>,
     #[cfg(test)]
     paste_buffer_delete_pause: Weak<StdMutex<Option<Arc<PasteBufferDeletePause>>>>,
 }
@@ -193,6 +197,7 @@ impl WeakRequestHandler {
             subscriptions: self.subscriptions.upgrade()?,
             sdk_waits: self.sdk_waits.upgrade()?,
             pane_snapshot_coalescers: self.pane_snapshot_coalescers.upgrade()?,
+            pane_snapshot_revisions: self.pane_snapshot_revisions.upgrade()?,
             #[cfg(test)]
             cleanup_on_drop: false,
             #[cfg(test)]
@@ -287,6 +292,9 @@ impl RequestHandler {
             pane_snapshot_coalescers: Arc::new(StdMutex::new(
                 PaneSnapshotCoalescerRegistry::with_default_rate(),
             )),
+            pane_snapshot_revisions: Arc::new(StdMutex::new(
+                PaneSnapshotRevisionRegistry::default(),
+            )),
             #[cfg(test)]
             cleanup_on_drop: true,
             #[cfg(test)]
@@ -313,6 +321,7 @@ impl RequestHandler {
             subscriptions: Arc::downgrade(&self.subscriptions),
             sdk_waits: Arc::downgrade(&self.sdk_waits),
             pane_snapshot_coalescers: Arc::downgrade(&self.pane_snapshot_coalescers),
+            pane_snapshot_revisions: Arc::downgrade(&self.pane_snapshot_revisions),
             #[cfg(test)]
             paste_buffer_delete_pause: Arc::downgrade(&self.paste_buffer_delete_pause),
         }
