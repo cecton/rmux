@@ -286,11 +286,11 @@ fn widget_handles_wide_glyph_padding() {
     let state = PaneState::from_snapshot(snapshot);
     let area = Rect::new(0, 0, 3, 1);
     let mut buf = Buffer::empty(area);
+    buf.cell_mut((1, 0)).unwrap().set_symbol("x");
     PaneWidget::new(&state).render(area, &mut buf);
     assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "漢");
-    // Padding cell's default symbol is " " from Buffer::empty; the
-    // widget must leave it untouched so the wide glyph's display width
-    // is not overwritten with anything else.
+    // Padding cells must not draw a second glyph, but they must clear
+    // stale host-buffer content from prior renders.
     assert_eq!(buf.cell((1, 0)).unwrap().symbol(), " ");
     assert_eq!(buf.cell((2, 0)).unwrap().symbol(), "z");
 }
@@ -378,12 +378,41 @@ fn widget_base_style_paints_full_area_even_when_snapshot_is_smaller() {
     let base = Style::new().bg(Color::Blue);
     let area = Rect::new(0, 0, 3, 2);
     let mut buf = Buffer::empty(area);
+    for y in 0..area.height {
+        for x in 0..area.width {
+            buf.cell_mut((x, y)).unwrap().set_symbol("x");
+        }
+    }
     PaneWidget::new(&state)
         .base_style(base)
         .render(area, &mut buf);
     assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "a");
     for (x, y) in [(1, 0), (2, 0), (0, 1), (1, 1), (2, 1)] {
+        assert_eq!(buf.cell((x, y)).unwrap().symbol(), " ", "cell ({x},{y})");
         assert_eq!(buf.cell((x, y)).unwrap().bg, Color::Blue, "cell ({x},{y})");
+    }
+}
+
+#[test]
+fn widget_clears_symbols_when_rerendering_smaller_snapshot() {
+    let large = small_state();
+    let small_snapshot = PaneSnapshot::new(
+        1,
+        1,
+        vec![PaneCell::new(PaneGlyph::new("a", 1))],
+        PaneCursor::default(),
+    )
+    .unwrap();
+    let small = PaneState::from_snapshot(small_snapshot);
+    let area = Rect::new(0, 0, 3, 2);
+    let mut buf = Buffer::empty(area);
+
+    PaneWidget::new(&large).render(area, &mut buf);
+    PaneWidget::new(&small).render(area, &mut buf);
+
+    assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "a");
+    for (x, y) in [(1, 0), (2, 0), (0, 1), (1, 1), (2, 1)] {
+        assert_eq!(buf.cell((x, y)).unwrap().symbol(), " ", "cell ({x},{y})");
     }
 }
 

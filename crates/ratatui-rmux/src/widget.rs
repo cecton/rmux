@@ -63,13 +63,13 @@ impl<'a> PaneWidget<'a> {
 
         let snapshot = &self.state.snapshot;
         if !snapshot.is_row_major_shape() {
-            // Malformed snapshots paint the base style only — the
+            // Malformed snapshots paint a blank base area only — the
             // widget never panics on a bad input.
-            buf.set_style(area, self.base_style);
+            fill_area(buf, area, self.base_style);
             return;
         }
 
-        buf.set_style(area, self.base_style);
+        fill_area(buf, area, self.base_style);
 
         let max_rows = u16::min(snapshot.rows, area.height);
         let max_cols = u16::min(snapshot.cols, area.width);
@@ -90,13 +90,28 @@ impl<'a> PaneWidget<'a> {
                 };
                 let symbol = glyph_symbol(&cell.glyph);
                 if symbol.is_empty() {
-                    // Wide-glyph padding column — leave whatever the
-                    // leading glyph put there.
+                    // Wide-glyph padding occupies a cell in the
+                    // snapshot. Clear stale host content without
+                    // introducing an extra visible glyph.
+                    buffer_cell.set_symbol(" ");
+                    buffer_cell.set_style(cell_style(cell));
                     continue;
                 }
                 buffer_cell.set_symbol(symbol);
                 buffer_cell.set_style(cell_style(cell));
             }
+        }
+    }
+}
+
+fn fill_area(buf: &mut Buffer, area: Rect, style: Style) {
+    for y in area.y..area.y.saturating_add(area.height) {
+        for x in area.x..area.x.saturating_add(area.width) {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                continue;
+            };
+            cell.set_symbol(" ");
+            cell.set_style(style);
         }
     }
 }
