@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -11,6 +12,7 @@ use rmux_sdk::bootstrap::discovery::{
 use rmux_sdk::{RmuxBuilder, RmuxEndpoint};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(unix)]
 static UNIQUE_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
@@ -421,10 +423,12 @@ impl Drop for EnvGuard {
     }
 }
 
+#[cfg(unix)]
 struct TestRoot {
     path: PathBuf,
 }
 
+#[cfg(unix)]
 impl TestRoot {
     fn new(label: &str) -> Self {
         let unique = UNIQUE_ID.fetch_add(1, Ordering::Relaxed);
@@ -444,6 +448,7 @@ impl TestRoot {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TestRoot {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
