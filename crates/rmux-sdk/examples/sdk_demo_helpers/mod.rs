@@ -64,12 +64,19 @@ pub(crate) async fn demo_session(name: &str) -> rmux_sdk::Result<(Rmux, Session)
     Ok((rmux, session))
 }
 
-/// Paints the colored rmux prompt with no command, then `read -r _` to keep
-/// the prompt visible. Use this before scenarios that visually need a
-/// prompt on screen but don't run a command themselves (e.g. split).
+/// Paints the colored rmux prompt with no command, then hands the
+/// shell off to `cat` so any input from a snippet under capture is
+/// silently swallowed (the screen stays frozen on the prompt). The
+/// earlier `read -r _` form let the snippet's `send_text+Enter`
+/// consume the read and drop bash back to its `bash-5.2$` fallback,
+/// which corrupted the captured snapshot deterministically.
 pub(crate) async fn paint_idle_prompt(session: &Session) -> rmux_sdk::Result<()> {
     let pane = session.pane(0, 0);
-    let paint = format!("clear; printf '{PROMPT}'; read -r _");
+    let paint = format!(
+        "clear; printf '{PROMPT}'; \
+         stty -echo -icanon < /dev/tty 2>/dev/null; \
+         exec cat > /dev/null"
+    );
     pane.send_text(&paint).await?;
     pane.send_key("Enter").await?;
     Ok(())
@@ -95,16 +102,57 @@ async fn paint_command_run(
     expected_output: &str,
 ) -> rmux_sdk::Result<()> {
     let pane = session.pane(0, 0);
+    // `exec cat > /dev/null` replaces the shell with a process that
+    // silently swallows stdin — the screen is frozen on exactly the
+    // two visible rows (`prompt+command` and `output`). The previous
+    // `printf '{PROMPT}'; read -r _` form left a third "next prompt"
+    // line that the snippet's `send_text+Enter` would then consume,
+    // dragging bash back to its raw `bash-5.2$` fallback and breaking
+    // the captured snapshot's hash determinism. With `exec cat` the
+    // post-snippet state is identical to the pre-snippet state, so
+    // `sdk-demo capture` produces stable bytes across runs.
     let cmd = format!(
         "clear; \
          printf '{PROMPT}{command}\\n'; \
          {command}; \
-         printf '{PROMPT}'; \
-         read -r _"
+         stty -echo -icanon < /dev/tty 2>/dev/null; \
+         exec cat > /dev/null"
     );
     pane.send_text(&cmd).await?;
     pane.send_key("Enter").await?;
     pane.wait_for_text(expected_output).await?;
+    Ok(())
+}
+
+/// Paints arbitrary literal `lines` onto the demo pane and parks the
+/// shell on `read -r _` so the captured fixture is frozen on that
+/// state. Each line is emitted via `printf '...\n'` (so escape codes
+/// are honoured). Use this when the snippet itself isn't producing
+/// the visual you want to record — e.g. "server started" status
+/// lines for the detached-app scenario, mock HTTP log lines for the
+/// reconnect scenario.
+pub(crate) async fn paint_lines(session: &Session, lines: &[&str]) -> rmux_sdk::Result<()> {
+    let pane = session.pane(0, 0);
+    let mut script = String::from("clear");
+    for line in lines {
+        // Each line is shell-escaped via single-quote: any embedded
+        // single quote is encoded as `'\''`.
+        let escaped = line.replace('\'', r"'\''");
+        script.push_str("; printf '");
+        script.push_str(&escaped);
+        script.push_str("\\n'");
+    }
+    script.push_str("; stty -echo -icanon < /dev/tty 2>/dev/null; exec cat > /dev/null");
+    pane.send_text(&script).await?;
+    pane.send_key("Enter").await?;
+    if let Some(last) = lines.last().and_then(|s| s.split('\\').next()) {
+        // Wait for a stable substring of the final line so the
+        // capture only runs after the paint has landed.
+        let needle: String = last.chars().take(8).collect();
+        if !needle.trim().is_empty() {
+            pane.wait_for_text(&needle).await?;
+        }
+    }
     Ok(())
 }
 
