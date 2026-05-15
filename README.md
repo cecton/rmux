@@ -22,6 +22,8 @@
 
 </div>
 
+> [!IMPORTANT]
+> Released on **16 May 2026**. All 90 tmux-compatible commands are implemented, but bugs are expected — this is a fresh public preview. Please [file issues](https://github.com/helvesec/rmux/issues) if you hit one.
 
 ## What RMUX Provides
 
