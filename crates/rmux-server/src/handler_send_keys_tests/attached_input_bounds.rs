@@ -5,6 +5,20 @@ async fn create_attached_live_session(
     name: &rmux_proto::SessionName,
     requester_pid: u32,
 ) {
+    #[cfg(unix)]
+    {
+        let mut state = handler.state.lock().await;
+        state
+            .options
+            .set(
+                ScopeSelector::Global,
+                OptionName::DefaultShell,
+                "/bin/bash".to_owned(),
+                SetOptionMode::Replace,
+            )
+            .expect("test default-shell is valid");
+    }
+
     let created = handler
         .handle(Request::NewSession(NewSessionRequest {
             session_name: name.clone(),

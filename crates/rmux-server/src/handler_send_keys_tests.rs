@@ -42,3 +42,32 @@ mod mouse_copy_mode;
 async fn handle_boxed(handler: &RequestHandler, request: Request) -> Response {
     Box::pin(handler.handle(request)).await
 }
+
+async fn create_send_keys_test_session(
+    handler: &RequestHandler,
+    session: &rmux_proto::SessionName,
+) {
+    #[cfg(unix)]
+    {
+        let mut state = handler.state.lock().await;
+        state
+            .options
+            .set(
+                ScopeSelector::Global,
+                OptionName::DefaultShell,
+                "/bin/bash".to_owned(),
+                SetOptionMode::Replace,
+            )
+            .expect("test default-shell is valid");
+    }
+
+    let created = handler
+        .handle(Request::NewSession(NewSessionRequest {
+            session_name: session.clone(),
+            detached: true,
+            size: Some(TerminalSize { cols: 80, rows: 24 }),
+            environment: None,
+        }))
+        .await;
+    assert!(matches!(created, Response::NewSession(_)));
+}

@@ -26,6 +26,14 @@ fn known_options_do_not_cross_global_roots_during_resolve() {
     assert_eq!(store.resolve(Some(&alpha), OptionName::Status), Some("off"));
 }
 
+#[cfg(unix)]
+#[test]
+fn unix_default_shell_is_empty_until_resolved_by_terminal_profile() {
+    let store = OptionStore::new();
+
+    assert_eq!(store.resolve(None, OptionName::DefaultShell), Some(""));
+}
+
 #[test]
 fn notification_effects_are_reported_for_known_options() {
     let mut store = OptionStore::new();

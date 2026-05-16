@@ -6,15 +6,7 @@ async fn live_attach_bracketed_paste_sequences_pass_through_unchanged_when_chunk
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler
@@ -53,15 +45,7 @@ async fn live_attach_bracketed_paste_preserves_multiline_special_payload() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler
@@ -102,15 +86,7 @@ async fn live_attach_bracketed_paste_forwards_embedded_control_sequences_as_payl
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler

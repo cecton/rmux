@@ -313,6 +313,20 @@ async fn display_message_print_uses_stored_default_window_name_for_detached_sess
     let handler = RequestHandler::new();
     let alpha = session_name("alpha");
 
+    #[cfg(unix)]
+    {
+        let mut state = handler.state.lock().await;
+        state
+            .options
+            .set(
+                ScopeSelector::Global,
+                OptionName::DefaultShell,
+                "/bin/bash".to_owned(),
+                SetOptionMode::Replace,
+            )
+            .expect("test default-shell is valid");
+    }
+
     assert!(matches!(
         handler
             .handle(Request::NewSession(NewSessionRequest {

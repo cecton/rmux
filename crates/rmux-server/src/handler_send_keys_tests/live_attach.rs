@@ -5,15 +5,7 @@ async fn send_keys_uses_runtime_extended_key_format_for_mode_two() {
     let handler = RequestHandler::new();
     let alpha = session_name("alpha");
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let set_format = handler
         .handle(Request::SetOption(SetOptionRequest {
@@ -69,15 +61,7 @@ async fn send_keys_m_forwards_the_current_mouse_event_to_the_pane() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     {
         let mut state = handler.state.lock().await;
@@ -162,15 +146,7 @@ async fn live_attach_extended_keys_are_reencoded_for_the_target_pane() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler
@@ -197,15 +173,7 @@ async fn live_attach_committed_utf8_text_preserves_latin_and_ime_payload_chunks(
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler
@@ -240,15 +208,7 @@ async fn live_attach_focus_sequences_pass_through_unchanged() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let (control_tx, _control_rx) = mpsc::unbounded_channel();
     let _attach_id = handler
@@ -274,15 +234,7 @@ async fn live_attach_mouse_sequences_dispatch_default_mouse_bindings() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     {
         let mut state = handler.state.lock().await;
@@ -350,15 +302,7 @@ async fn live_attach_mouse_down_selects_the_clicked_pane() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     let split = handler
         .handle(Request::SplitWindow(SplitWindowRequest {
@@ -422,15 +366,7 @@ async fn live_attach_sgr_wheel_forwards_when_pane_mouse_any_is_enabled() {
     let alpha = session_name("alpha");
     let requester_pid = std::process::id();
 
-    let created = handler
-        .handle(Request::NewSession(NewSessionRequest {
-            session_name: alpha.clone(),
-            detached: true,
-            size: Some(TerminalSize { cols: 80, rows: 24 }),
-            environment: None,
-        }))
-        .await;
-    assert!(matches!(created, Response::NewSession(_)));
+    create_send_keys_test_session(&handler, &alpha).await;
 
     {
         let mut state = handler.state.lock().await;

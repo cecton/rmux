@@ -366,6 +366,7 @@ async fn live_wait_for_next_ignores_history_and_matches_split_future_output() ->
     let rmux = harness.rmux();
     let session = EnsureSession::named(unique_session_name("armedlive"))
         .create_only()
+        .environment(["SHELL=/bin/sh"])
         .ensure(&rmux)
         .await?;
     let pane = session.pane(0, 0);

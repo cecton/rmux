@@ -654,7 +654,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rmux"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "embed-manifest",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "rmux-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "rmux-core",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "rmux-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "regex",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "rmux-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-recursion",
  "chrono",

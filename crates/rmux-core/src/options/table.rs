@@ -57,7 +57,7 @@ const STATUS_RIGHT_DEFAULT: &str =
 const STATUS_RIGHT_DEFAULT: &str =
     "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}\"#{=21:pane_title}\" %H:%M %d-%b-%y";
 #[cfg(unix)]
-const DEFAULT_SHELL: &str = "/bin/bash";
+const DEFAULT_SHELL: &str = "";
 #[cfg(windows)]
 const DEFAULT_SHELL: &str = "";
 

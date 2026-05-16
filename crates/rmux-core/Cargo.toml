@@ -1,6 +1,6 @@
 [package]
 name = "rmux-core"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 publish = true
 license.workspace = true

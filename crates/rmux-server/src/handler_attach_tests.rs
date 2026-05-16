@@ -112,6 +112,9 @@ async fn create_attached_session(
     requester_pid: u32,
     session: &SessionName,
 ) -> mpsc::UnboundedReceiver<AttachControl> {
+    #[cfg(unix)]
+    set_unix_test_shell(handler, session).await;
+
     assert!(matches!(
         handler
             .handle(Request::NewSession(NewSessionRequest {
@@ -128,6 +131,20 @@ async fn create_attached_session(
         .register_attach(requester_pid, session.clone(), control_tx)
         .await;
     control_rx
+}
+
+#[cfg(unix)]
+async fn set_unix_test_shell(handler: &RequestHandler, _session: &SessionName) {
+    let mut state = handler.state.lock().await;
+    state
+        .options
+        .set(
+            ScopeSelector::Global,
+            OptionName::DefaultShell,
+            "/bin/bash".to_owned(),
+            SetOptionMode::Replace,
+        )
+        .expect("test default-shell is valid");
 }
 
 async fn create_quiet_attached_session(

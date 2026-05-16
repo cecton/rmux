@@ -24,8 +24,13 @@ pub(super) fn resolve_shell_path(
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .map(normalize_shell_path)
+        .or_else(|| {
+            environment
+                .get("SHELL")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(current_user_login_shell)
-        .or_else(|| environment.get("SHELL").map(PathBuf::from))
         .map(normalize_shell_path)
         .unwrap_or_else(default_shell_path)
 }

@@ -311,17 +311,38 @@ fn terminal_profile_runtime_window_name_tracks_spawned_command_shape() {
 
 #[cfg(unix)]
 #[test]
-fn resolve_shell_path_prefers_default_shell_option_before_shell_env_fallback() {
-    let options = OptionStore::new();
+fn resolve_shell_path_prefers_explicit_default_shell_option_before_shell_env_fallback() {
+    let mut options = OptionStore::new();
+    let session_name = SessionName::new("alpha").expect("valid session name");
     let environment = HashMap::from([("SHELL".to_owned(), "/bin/sh".to_owned())]);
-    let resolved = super::resolve_shell_path(&options, None, &environment);
-    let expected = options
-        .resolve(None, OptionName::DefaultShell)
-        .expect("default-shell has a table default");
+    options
+        .set(
+            ScopeSelector::Session(session_name.clone()),
+            OptionName::DefaultShell,
+            "/bin/bash".to_owned(),
+            SetOptionMode::Replace,
+        )
+        .expect("default-shell succeeds");
+
+    let resolved = super::resolve_shell_path(&options, Some(&session_name), &environment);
 
     assert_eq!(
         resolved,
-        super::shell_resolver::normalize_shell_path(PathBuf::from(expected))
+        super::shell_resolver::normalize_shell_path(PathBuf::from("/bin/bash"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_shell_path_uses_shell_env_when_default_shell_is_empty() {
+    let options = OptionStore::new();
+    let environment = HashMap::from([("SHELL".to_owned(), "/bin/zsh".to_owned())]);
+
+    let resolved = super::resolve_shell_path(&options, None, &environment);
+
+    assert_eq!(
+        resolved,
+        super::shell_resolver::normalize_shell_path(PathBuf::from("/bin/zsh"))
     );
 }
 

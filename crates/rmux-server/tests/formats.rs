@@ -62,7 +62,10 @@ async fn list_windows_uses_shared_formatter_through_real_socket() -> Result<(), 
                 cols: 120,
                 rows: 40,
             }),
-            environment: Some(vec!["TERM_PROGRAM=tmux".to_owned()]),
+            environment: Some(vec![
+                "SHELL=/bin/bash".to_owned(),
+                "TERM_PROGRAM=tmux".to_owned(),
+            ]),
         }),
     )
     .await?;
