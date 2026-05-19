@@ -83,9 +83,11 @@ cargo add rmux-sdk
 cargo add ratatui-rmux
 ```
 
-## Docs
+## Documentation
 
-完全なドキュメントは [rmux.io/docs](https://rmux.io/docs/) で確認できます · [はじめる](https://rmux.io/docs/get-started/) · [Examples](https://rmux.io/docs/examples/) · [API](https://rmux.io/docs/api/) · [CLI](https://rmux.io/docs/cli/)。
+RMUX の完全なドキュメントは [rmux.io/docs](https://rmux.io/docs/) で確認できます。
+
+[インストールガイド](https://rmux.io/docs/get-started/)、[CLI リファレンス](https://rmux.io/docs/cli/)、[SDK サンプル](https://rmux.io/docs/examples/)、[ターミナル自動化サンプル](https://rmux.io/docs/examples/#/terminal-playwright)、[API ドキュメント](https://rmux.io/docs/api/) を含みます。
 
 ## CLI Quickstart
 

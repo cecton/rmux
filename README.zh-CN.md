@@ -83,9 +83,11 @@ cargo add rmux-sdk
 cargo add ratatui-rmux
 ```
 
-## Docs
+## Documentation
 
-完整文档可在 [rmux.io/docs](https://rmux.io/docs/) 查看 · [快速开始](https://rmux.io/docs/get-started/) · [示例](https://rmux.io/docs/examples/) · [API](https://rmux.io/docs/api/) · [CLI](https://rmux.io/docs/cli/)。
+完整 RMUX 文档可在 [rmux.io/docs](https://rmux.io/docs/) 查看。
+
+其中包括[安装指南](https://rmux.io/docs/get-started/)、[CLI 参考](https://rmux.io/docs/cli/)、[SDK 示例](https://rmux.io/docs/examples/)、[终端自动化示例](https://rmux.io/docs/examples/#/terminal-playwright)，以及 [API 文档](https://rmux.io/docs/api/)。
 
 ## CLI 快速开始
 

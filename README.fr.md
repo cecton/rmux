@@ -83,9 +83,11 @@ cargo add rmux-sdk
 cargo add ratatui-rmux
 ```
 
-## Docs
+## Documentation
 
-La documentation complète est disponible sur [rmux.io/docs](https://rmux.io/docs/) · [Démarrer](https://rmux.io/docs/get-started/) · [Exemples](https://rmux.io/docs/examples/) · [API](https://rmux.io/docs/api/) · [CLI](https://rmux.io/docs/cli/).
+La documentation complète de RMUX est disponible sur [rmux.io/docs](https://rmux.io/docs/).
+
+Elle inclut des [guides d'installation](https://rmux.io/docs/get-started/), des [références CLI](https://rmux.io/docs/cli/), des [exemples SDK](https://rmux.io/docs/examples/), des [exemples d'automatisation terminal](https://rmux.io/docs/examples/#/terminal-playwright), et la [documentation API](https://rmux.io/docs/api/).
 
 ## Démarrage rapide CLI
 
