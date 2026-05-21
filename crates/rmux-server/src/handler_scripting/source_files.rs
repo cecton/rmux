@@ -79,6 +79,17 @@ pub(super) fn default_config_paths() -> Vec<String> {
     }
 }
 
+pub(super) fn default_tmux_fallback_paths() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        windows_tmux_fallback_paths()
+    }
+    #[cfg(not(windows))]
+    {
+        unix_tmux_fallback_paths()
+    }
+}
+
 #[cfg(not(windows))]
 fn unix_default_config_paths() -> Vec<String> {
     let mut paths = Vec::new();
@@ -97,6 +108,29 @@ fn unix_default_config_paths() -> Vec<String> {
     }
     if let Some(home) = nonempty_env("HOME") {
         push_unique(format!("{home}/.config/rmux/rmux.conf"));
+    }
+
+    paths
+}
+
+#[cfg(not(windows))]
+fn unix_tmux_fallback_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut push_unique = |path: String| {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    };
+
+    push_unique("/etc/tmux.conf".to_owned());
+    if let Some(home) = nonempty_env("HOME") {
+        push_unique(format!("{home}/.tmux.conf"));
+    }
+    if let Some(xdg_config_home) = nonempty_env("XDG_CONFIG_HOME") {
+        push_unique(format!("{xdg_config_home}/tmux/tmux.conf"));
+    }
+    if let Some(home) = nonempty_env("HOME") {
+        push_unique(format!("{home}/.config/tmux/tmux.conf"));
     }
 
     paths
@@ -128,6 +162,33 @@ fn windows_default_config_paths() -> Vec<String> {
     }
     if let Some(config_file) = nonempty_env("RMUX_CONFIG_FILE") {
         push_unique(PathBuf::from(config_file));
+    }
+
+    paths
+}
+
+#[cfg(windows)]
+fn windows_tmux_fallback_paths() -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        let path = path.to_string_lossy().into_owned();
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    };
+
+    if let Some(xdg_config_home) = nonempty_env("XDG_CONFIG_HOME") {
+        push_unique(
+            PathBuf::from(xdg_config_home)
+                .join("tmux")
+                .join("tmux.conf"),
+        );
+    }
+    if let Some(userprofile) = nonempty_env("USERPROFILE") {
+        push_unique(PathBuf::from(userprofile).join(".tmux.conf"));
+    }
+    if let Some(appdata) = nonempty_env("APPDATA") {
+        push_unique(PathBuf::from(appdata).join("tmux").join("tmux.conf"));
     }
 
     paths

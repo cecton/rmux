@@ -14,8 +14,8 @@ use super::super::RequestHandler;
 use super::format_context::{format_context_for_target, parser_with_parse_time_context};
 use super::queue::{QueueCommandAction, QueueExecutionContext};
 use super::source_files::{
-    default_config_paths, source_inputs_for_path, source_parse_error, LoadedSourceFile,
-    ParsedSourceFileCommand, SourceInput, SourcedParsedCommands,
+    default_config_paths, default_tmux_fallback_paths, source_inputs_for_path, source_parse_error,
+    LoadedSourceFile, ParsedSourceFileCommand, SourceInput, SourcedParsedCommands,
 };
 use super::targets::active_session_target;
 use crate::format_runtime::{render_runtime_template, RuntimeFormatContext};
@@ -25,21 +25,24 @@ impl RequestHandler {
     pub(crate) async fn load_startup_config(&self, config_load: ConfigLoadOptions) {
         self.config_loading_depth.fetch_add(1, Ordering::Relaxed);
         let queue_errors = !matches!(config_load.selection(), ConfigFileSelection::Files(_));
-        let paths = match config_load.selection() {
+        let (paths, tmux_fallback_paths) = match config_load.selection() {
             ConfigFileSelection::Disabled => {
                 self.config_loading_depth.fetch_sub(1, Ordering::Relaxed);
                 return;
             }
-            ConfigFileSelection::Default => default_config_paths(),
-            ConfigFileSelection::Files(files) => files
-                .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect(),
+            ConfigFileSelection::Default => (default_config_paths(), default_tmux_fallback_paths()),
+            ConfigFileSelection::Files(files) => (
+                files
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+                Vec::new(),
+            ),
         };
 
         let command = ParsedSourceFileCommand {
             paths,
-            quiet: config_load.quiet(),
+            quiet: true,
             parse_only: false,
             verbose: false,
             expand_paths: false,
@@ -49,33 +52,55 @@ impl RequestHandler {
             current_file: None,
         };
 
-        match self.load_source_file_command(&command, 1).await {
-            Ok(mut loaded) => {
-                let mut errors = Vec::new();
-                if let Some(error) = loaded.take_error() {
-                    errors.push(error);
-                }
-                if let Err(error) = self
-                    .execute_loaded_source_file(
-                        std::process::id(),
-                        loaded,
-                        QueueExecutionContext::new(command.caller_cwd.clone()),
-                        1,
-                    )
-                    .await
-                {
-                    errors.push(error);
-                }
-                if queue_errors {
-                    if let Some(error) = super::aggregate_rmux_errors(errors) {
-                        self.startup_config_errors.lock().await.push(error);
-                    }
-                }
-            }
+        let loaded = match self.load_source_file_command(&command, 1).await {
+            Ok(loaded) => loaded,
             Err(error) => {
                 if queue_errors {
                     self.startup_config_errors.lock().await.push(error);
                 }
+                self.config_loading_depth.fetch_sub(1, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        let (mut loaded, is_tmux_fallback) = if loaded.is_empty() && !tmux_fallback_paths.is_empty()
+        {
+            let fallback_command = ParsedSourceFileCommand {
+                paths: tmux_fallback_paths,
+                quiet: true,
+                ..command.clone()
+            };
+            match self.load_source_file_command(&fallback_command, 1).await {
+                Ok(loaded) => (loaded, true),
+                Err(_) => {
+                    self.config_loading_depth.fetch_sub(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        } else {
+            (loaded, false)
+        };
+
+        let mut errors = Vec::new();
+        if let Some(error) = loaded.take_error() {
+            errors.push(error);
+        }
+        if let Err(error) = self
+            .execute_loaded_source_file(
+                std::process::id(),
+                loaded,
+                QueueExecutionContext::new(command.caller_cwd.clone()),
+                1,
+            )
+            .await
+        {
+            if !is_tmux_fallback {
+                errors.push(error);
+            }
+        }
+        if queue_errors {
+            if let Some(error) = super::aggregate_rmux_errors(errors) {
+                self.startup_config_errors.lock().await.push(error);
             }
         }
         self.config_loading_depth.fetch_sub(1, Ordering::Relaxed);

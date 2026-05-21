@@ -528,7 +528,7 @@ fn command_parse_error_to_rmux(error: CommandParseError) -> RmuxError {
 
 #[cfg(test)]
 mod tests {
-    use super::source_files::default_config_paths;
+    use super::source_files::{default_config_paths, default_tmux_fallback_paths};
     #[cfg(windows)]
     use super::source_files::source_inputs_for_path;
     use std::sync::{Mutex, OnceLock};
@@ -587,6 +587,33 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn tmux_fallback_paths_use_tmux_locations() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _home = EnvVarGuard::set("HOME", Some("/tmp/rmux-home"));
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", Some("/tmp/rmux-xdg"));
+
+        let paths = default_tmux_fallback_paths();
+
+        assert_eq!(
+            paths,
+            vec![
+                "/etc/tmux.conf".to_owned(),
+                "/tmp/rmux-home/.tmux.conf".to_owned(),
+                "/tmp/rmux-xdg/tmux/tmux.conf".to_owned(),
+                "/tmp/rmux-home/.config/tmux/tmux.conf".to_owned(),
+            ]
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains("rmux")),
+            "tmux fallback paths must not include rmux locations: {paths:?}"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn default_config_paths_use_documented_windows_locations() {
@@ -621,6 +648,33 @@ mod tests {
         assert!(
             paths.iter().all(|path| !path.contains("tmux")),
             "Windows default config search path must not include tmux locations: {paths:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tmux_fallback_paths_use_documented_windows_tmux_locations() {
+        let _lock = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock");
+        let _appdata = EnvVarGuard::set("APPDATA", Some(r"C:\Users\tester\AppData\Roaming"));
+        let _userprofile = EnvVarGuard::set("USERPROFILE", Some(r"C:\Users\tester"));
+        let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", Some(r"C:\Users\tester\.config"));
+
+        let paths = default_tmux_fallback_paths();
+
+        assert_eq!(
+            paths,
+            vec![
+                path_string(r"C:\Users\tester\.config\tmux\tmux.conf"),
+                path_string(r"C:\Users\tester\.tmux.conf"),
+                path_string(r"C:\Users\tester\AppData\Roaming\tmux\tmux.conf"),
+            ]
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains("rmux")),
+            "tmux fallback paths must not include rmux locations: {paths:?}"
         );
     }
 
