@@ -67,6 +67,11 @@ impl TerminalScreen {
         self.parser.take_terminal_passthrough()
     }
 
+    /// Returns and drains terminal replies generated while parsing PTY output.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        self.parser.take_replies()
+    }
+
     /// Replaces the hidden parser with a fresh ground-state instance while
     /// preserving the current screen grid.
     pub fn reset_parser(&mut self) {

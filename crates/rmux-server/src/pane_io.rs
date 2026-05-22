@@ -720,6 +720,13 @@ async fn process_socket_messages(
                     .await
                     .map_err(io::Error::other)?;
             }
+            AttachMessage::ResizeGeometry(geometry) => {
+                live_input
+                    .handler
+                    .handle_attached_resize_geometry(live_input.attach_pid, geometry)
+                    .await
+                    .map_err(io::Error::other)?;
+            }
             AttachMessage::Lock(_) | AttachMessage::LockShellCommand(_) => {
                 return Err(io::Error::other(
                     "received unexpected lock message from attach client",

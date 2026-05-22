@@ -12,10 +12,12 @@ pub(super) fn render_passthroughs(
 
     let mut frame = Vec::new();
     for passthrough in passthroughs {
-        if passthrough.kind() != TerminalPassthroughKind::KittyGraphics {
-            continue;
+        match passthrough.kind() {
+            TerminalPassthroughKind::KittyGraphics => {
+                append_cursor_position(&mut frame, target.active_pane_geometry, passthrough);
+            }
+            TerminalPassthroughKind::Raw => {}
         }
-        append_cursor_position(&mut frame, target.active_pane_geometry, passthrough);
         frame.extend_from_slice(&passthrough.render_sequence());
     }
     frame
@@ -87,5 +89,29 @@ mod tests {
             )],
         );
         assert_eq!(frame, b"\x1b[9;7H\x1b_Gf=100;AAAA\x1b\\");
+    }
+
+    #[test]
+    fn render_passthroughs_forwards_raw_queries_without_cursor_wrap() {
+        let pty = PtyPair::open().expect("open pty pair");
+        let pane_output = pane_output_channel();
+        let target = OpenAttachTarget {
+            session_name: SessionName::new("alpha").expect("valid session name"),
+            _pane_master: pty.into_master(),
+            pane_output: Some(pane_output.subscribe()),
+            render_frame: Vec::new(),
+            outer_terminal: OuterTerminal::resolve(
+                &OptionStore::default(),
+                OuterTerminalContext::from_pairs(&[("TERM", "xterm-kitty")]),
+            ),
+            cursor_style: 0,
+            active_pane_geometry: PaneGeometry::new(5, 6, 80, 24),
+            kitty_graphics_passthrough: true,
+            persistent_overlay_state_id: None,
+            live_pane: None,
+        };
+
+        let frame = render_passthroughs(&target, &[TerminalPassthrough::raw(0, 0, b"\x1b[c")]);
+        assert_eq!(frame, b"\x1b[c");
     }
 }

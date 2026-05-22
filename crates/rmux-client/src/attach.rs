@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rmux_proto::{
     encode_attach_message, AttachFrameDecoder, AttachMessage, AttachedKeystroke, RmuxError,
-    TerminalSize,
+    TerminalGeometry, TerminalSize,
 };
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 use rustix::process::{kill_process, Signal};
@@ -27,7 +27,9 @@ mod terminal;
 #[path = "attach/terminal_cleanup.rs"]
 mod terminal_cleanup;
 
-use resize::{terminal_size_from_fd, ResizeWatcher, SignalMaskGuard};
+#[cfg(test)]
+use resize::terminal_size_from_fd;
+use resize::{terminal_geometry_from_fd, ResizeWatcher, SignalMaskGuard};
 use screen::{
     contains_subslice, AttachScreenTracker, AttachStopDetector, ALT_SCREEN_EXIT_FALLBACK,
     DETACHED_BANNER_PREFIX, EXITED_BANNER,
@@ -129,14 +131,14 @@ where
     // which keeps termios restoration as the last drop on every return path.
     let _signal_mask = SignalMaskGuard::block_winch().map_err(ClientError::from)?;
     let (resize_tx, resize_rx) = mpsc::channel();
-    let initial_size = terminal_size_from_fd(terminal).map_err(ClientError::from)?;
+    let initial_geometry = terminal_geometry_from_fd(terminal).map_err(ClientError::from)?;
     let terminal_fd = terminal
         .as_fd()
         .try_clone_to_owned()
         .map_err(AttachError::from)?;
 
-    if let Some(initial_size) = initial_size {
-        resize_tx.send(initial_size).map_err(|_| {
+    if let Some(initial_geometry) = initial_geometry {
+        resize_tx.send(initial_geometry).map_err(|_| {
             ClientError::Io(io::Error::other(
                 "resize channel closed before attach start",
             ))
@@ -168,6 +170,7 @@ where
     Input: Read + AsFd + Send + 'static,
     Output: Write + Send + 'static,
 {
+    let resize_events = geometry_resize_events_from_size_events(resize_events);
     drive_attach_stream_inner(
         stream,
         Vec::new(),
@@ -179,6 +182,20 @@ where
     )
 }
 
+fn geometry_resize_events_from_size_events(
+    resize_events: mpsc::Receiver<TerminalSize>,
+) -> mpsc::Receiver<TerminalGeometry> {
+    let (geometry_tx, geometry_rx) = mpsc::channel();
+    let _forwarder = thread::spawn(move || {
+        while let Ok(size) = resize_events.recv() {
+            if geometry_tx.send(TerminalGeometry::from_size(size)).is_err() {
+                break;
+            }
+        }
+    });
+    geometry_rx
+}
+
 fn drive_attach_stream_with_locking<Input, Output>(
     stream: UnixStream,
     initial_bytes: Vec<u8>,
@@ -186,7 +203,7 @@ fn drive_attach_stream_with_locking<Input, Output>(
     screen_tracker: &AttachScreenTracker,
     input: Input,
     output: Output,
-    resize_events: mpsc::Receiver<TerminalSize>,
+    resize_events: mpsc::Receiver<TerminalGeometry>,
 ) -> std::result::Result<(), ClientError>
 where
     Input: Read + AsFd + Send + 'static,
@@ -210,7 +227,7 @@ fn drive_attach_stream_inner<Input, Output>(
     screen_tracker: AttachScreenTracker,
     input: Input,
     output: Output,
-    resize_events: mpsc::Receiver<TerminalSize>,
+    resize_events: mpsc::Receiver<TerminalGeometry>,
 ) -> std::result::Result<(), ClientError>
 where
     Input: Read + AsFd + Send + 'static,
@@ -267,7 +284,7 @@ where
 fn input_loop<Input>(
     mut stream: UnixStream,
     mut input: Input,
-    resize_events: mpsc::Receiver<TerminalSize>,
+    resize_events: mpsc::Receiver<TerminalGeometry>,
     closed: Arc<AtomicBool>,
     locked: Arc<AtomicBool>,
 ) -> std::result::Result<(), ClientError>
@@ -365,7 +382,7 @@ where
                     output.flush().map_err(ClientError::Io)?;
                 }
                 AttachMessage::KeyDispatched(_) => {}
-                AttachMessage::Resize(_) => {
+                AttachMessage::Resize(_) | AttachMessage::ResizeGeometry(_) => {
                     return Err(ClientError::Protocol(RmuxError::Decode(
                         "received unexpected resize message from attach stream".to_owned(),
                     )));
@@ -540,10 +557,15 @@ fn handle_attach_action(
 
 fn drain_resize_events(
     stream: &mut UnixStream,
-    resize_events: &mpsc::Receiver<TerminalSize>,
+    resize_events: &mpsc::Receiver<TerminalGeometry>,
 ) -> std::result::Result<(), ClientError> {
-    while let Ok(size) = resize_events.try_recv() {
-        write_attach_message(stream, AttachMessage::Resize(size))?;
+    while let Ok(geometry) = resize_events.try_recv() {
+        let message = if geometry.pixels.is_some() {
+            AttachMessage::ResizeGeometry(geometry)
+        } else {
+            AttachMessage::Resize(geometry.size)
+        };
+        write_attach_message(stream, message)?;
     }
 
     Ok(())

@@ -3,7 +3,7 @@ use std::io;
 use rmux_core::PaneId;
 #[cfg(windows)]
 use rmux_pty::PtyChild;
-use rmux_pty::PtyMaster;
+use rmux_pty::{PtyIo, PtyMaster};
 use tracing::warn;
 
 #[cfg(unix)]
@@ -138,7 +138,7 @@ async fn read_pane_output(
     pane_alert_callback: Option<PaneAlertCallback>,
     pane_exit_callback: Option<PaneExitCallback>,
 ) -> io::Result<()> {
-    let pane_reader = open_pane_writer(pane_master)?;
+    let (pane_reader, reply_writer) = open_pane_writer(pane_master)?;
     let mut buffer = [0_u8; READ_BUFFER_SIZE];
 
     loop {
@@ -156,7 +156,7 @@ async fn read_pane_output(
         }
 
         let bytes = buffer[..bytes_read].to_vec();
-        publish_pane_bytes(
+        let replies = publish_pane_bytes(
             &session_name,
             pane_id,
             &transcript,
@@ -165,6 +165,7 @@ async fn read_pane_output(
             pane_alert_callback.as_ref(),
             bytes,
         );
+        write_parser_replies_to_pane(&reply_writer, replies).await?;
     }
 }
 
@@ -194,7 +195,7 @@ fn read_pane_output_blocking(
             return Ok(());
         }
 
-        publish_pane_bytes(
+        let replies = publish_pane_bytes(
             &session_name,
             pane_id,
             &transcript,
@@ -203,6 +204,7 @@ fn read_pane_output_blocking(
             pane_alert_callback.as_ref(),
             buffer[..bytes_read].to_vec(),
         );
+        write_parser_replies_to_pane_blocking(&pane_reader, replies)?;
     }
 }
 
@@ -214,9 +216,9 @@ fn publish_pane_bytes(
     generation: Option<u64>,
     pane_alert_callback: Option<&PaneAlertCallback>,
     bytes: Vec<u8>,
-) {
+) -> Vec<u8> {
     if !pane_output.accepts_generation(generation) {
-        return;
+        return Vec::new();
     }
     let append_result = {
         let mut transcript = transcript
@@ -224,11 +226,12 @@ fn publish_pane_bytes(
             .expect("pane transcript mutex must not be poisoned");
         transcript.append_bytes_with_effects(&bytes)
     };
+    let replies = append_result.replies;
     if pane_output
         .send_for_generation_with_passthroughs(generation, bytes, append_result.passthroughs)
         .is_none()
     {
-        return;
+        return replies;
     }
     if let Some(callback) = pane_alert_callback {
         callback(PaneAlertEvent {
@@ -238,6 +241,26 @@ fn publish_pane_bytes(
             generation,
         });
     }
+    replies
+}
+
+#[cfg(unix)]
+async fn write_parser_replies_to_pane(pane_writer: &PtyIo, replies: Vec<u8>) -> io::Result<()> {
+    if replies.is_empty() {
+        return Ok(());
+    }
+    let pane_writer = pane_writer.try_clone().map_err(io::Error::other)?;
+    tokio::task::spawn_blocking(move || pane_writer.write_all(&replies))
+        .await
+        .map_err(|error| io::Error::other(format!("parser reply task failed: {error}")))?
+}
+
+#[cfg(windows)]
+fn write_parser_replies_to_pane_blocking(pane_writer: &PtyIo, replies: Vec<u8>) -> io::Result<()> {
+    if replies.is_empty() {
+        return Ok(());
+    }
+    pane_writer.write_all(&replies)
 }
 
 #[cfg(all(test, windows))]

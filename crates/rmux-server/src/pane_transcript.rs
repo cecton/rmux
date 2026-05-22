@@ -30,6 +30,7 @@ pub(crate) struct PaneTranscript {
 pub(crate) struct PaneAppendResult {
     pub(crate) bell_count: u64,
     pub(crate) passthroughs: Vec<TerminalPassthrough>,
+    pub(crate) replies: Vec<u8>,
 }
 
 impl std::fmt::Debug for PaneTranscript {
@@ -71,9 +72,15 @@ impl PaneTranscript {
             self.output_sequence = self.output_sequence.saturating_add(1);
         }
         self.terminal.feed(bytes);
+        let mut passthroughs = self.terminal.take_terminal_passthrough();
+        let mut replies = self.terminal.take_replies();
+        if !passthroughs.is_empty() && append_raw_terminal_queries(bytes, &mut passthroughs) {
+            replies.clear();
+        }
         PaneAppendResult {
             bell_count: self.terminal.screen_mut().take_bell_count(),
-            passthroughs: self.terminal.take_terminal_passthrough(),
+            passthroughs,
+            replies,
         }
     }
 
@@ -344,6 +351,23 @@ impl PaneTranscript {
     }
 }
 
+fn append_raw_terminal_queries(bytes: &[u8], passthroughs: &mut Vec<TerminalPassthrough>) -> bool {
+    let mut appended = false;
+    let mut search = bytes;
+    while let Some(offset) = find_subslice(search, b"\x1b[c") {
+        passthroughs.push(TerminalPassthrough::raw(0, 0, b"\x1b[c".to_vec()));
+        search = &search[offset + 3..];
+        appended = true;
+    }
+    appended
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::PaneTranscript;
@@ -377,6 +401,25 @@ mod tests {
         )
         .expect("capture is utf8");
         assert!(!capture.contains("Gf=100"));
+    }
+
+    #[test]
+    fn append_bytes_reports_terminal_replies() {
+        let mut transcript = transcript(40, 4, 10);
+        let result = transcript.append_bytes_with_effects(b"\x1b[c");
+
+        assert_eq!(result.replies, b"\x1b[?1;2c");
+        assert!(transcript.append_bytes_with_effects(b"").replies.is_empty());
+    }
+
+    #[test]
+    fn kitty_passthrough_batches_defer_da_to_attached_terminal() {
+        let mut transcript = transcript(40, 4, 10);
+        let result = transcript.append_bytes_with_effects(b"\x1b_Ga=q,f=24,i=1;MTIz\x1b\\\x1b[c");
+
+        assert!(result.replies.is_empty());
+        assert_eq!(result.passthroughs.len(), 2);
+        assert_eq!(result.passthroughs[1].render_sequence(), b"\x1b[c");
     }
 
     #[test]

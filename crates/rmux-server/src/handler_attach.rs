@@ -141,6 +141,7 @@ impl RequestHandler {
                 closing: registration.closing,
                 terminal_context: registration.terminal_context,
                 client_size,
+                client_pixels: None,
                 persistent_overlay_epoch: registration.persistent_overlay_epoch,
                 render_generation: 0,
                 overlay_generation: 0,
@@ -254,12 +255,19 @@ impl RequestHandler {
     pub(super) async fn terminal_context_and_size_for_attached_client(
         &self,
         attach_pid: u32,
-    ) -> Option<(OuterTerminalContext, TerminalSize)> {
+    ) -> Option<(
+        OuterTerminalContext,
+        TerminalSize,
+        Option<rmux_proto::TerminalPixels>,
+    )> {
         let active_attach = self.active_attach.lock().await;
-        active_attach
-            .by_pid
-            .get(&attach_pid)
-            .map(|active| (active.terminal_context.clone(), active.client_size))
+        active_attach.by_pid.get(&attach_pid).map(|active| {
+            (
+                active.terminal_context.clone(),
+                active.client_size,
+                active.client_pixels,
+            )
+        })
     }
 
     pub(super) async fn attached_session_name_for_command(

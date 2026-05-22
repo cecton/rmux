@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmux_core::alternate_screen_exit_sequence;
-use rmux_proto::{encode_attach_message, AttachFrameDecoder, AttachMessage, AttachedKeystroke};
+use rmux_proto::{
+    encode_attach_message, AttachFrameDecoder, AttachMessage, AttachedKeystroke, TerminalGeometry,
+    TerminalPixels,
+};
 use rmux_pty::PtyPair;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 use rustix::termios::{tcsetwinsize, Winsize};
@@ -62,10 +65,38 @@ fn resize_watcher_reports_sigwinch_updates() -> Result<(), Box<dyn std::error::E
     watcher.notify_for_test()?;
     assert_eq!(
         resize_rx.recv_timeout(Duration::from_secs(1))?,
-        TerminalSize {
-            cols: 120,
-            rows: 40,
-        }
+        TerminalGeometry::new(120, 40)
+    );
+
+    drop(watcher);
+    Ok(())
+}
+
+#[test]
+fn resize_watcher_reports_pixel_dimensions_when_available() -> Result<(), Box<dyn std::error::Error>>
+{
+    let pair = PtyPair::open_with_size(rmux_pty::TerminalSize::new(80, 24))?;
+    let (_master, slave) = pair.into_split();
+    let terminal = File::from(slave.into_owned_fd());
+    let resize_target = terminal.try_clone()?;
+    let _signal_mask = SignalMaskGuard::block_winch()?;
+    let (resize_tx, resize_rx) = mpsc::channel();
+    let watcher = ResizeWatcher::spawn(terminal.as_fd().try_clone_to_owned()?, resize_tx)?;
+
+    tcsetwinsize(
+        &resize_target,
+        Winsize {
+            ws_row: 40,
+            ws_col: 120,
+            ws_xpixel: 1440,
+            ws_ypixel: 960,
+        },
+    )?;
+
+    watcher.notify_for_test()?;
+    assert_eq!(
+        resize_rx.recv_timeout(Duration::from_secs(1))?,
+        TerminalGeometry::new(120, 40).with_pixels(TerminalPixels::new(1440, 960))
     );
 
     drop(watcher);
