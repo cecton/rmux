@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex as StdMutex;
@@ -6,11 +6,10 @@ use std::sync::{Arc, Weak};
 
 use rmux_core::events::{PaneSnapshotCoalescerRegistry, SubscriptionLimits};
 use rmux_ipc::PeerIdentity;
-use rmux_proto::{KillServerResponse, OptionName, Response, RmuxError, TerminalSize, WindowTarget};
+use rmux_proto::{RmuxError, TerminalSize, WindowTarget};
 use tokio::sync::{broadcast, Mutex};
 
 use crate::daemon::ShutdownHandle;
-use crate::diagnostic_log::{record_shutdown_queued, record_shutdown_request};
 #[path = "handler_alerts.rs"]
 mod alert_support;
 #[path = "handler_attach.rs"]
@@ -31,6 +30,8 @@ mod config_support;
 mod control_support;
 #[path = "handler_copy_mode.rs"]
 mod copy_mode_support;
+#[path = "handler_daemon.rs"]
+mod daemon_support;
 #[path = "handler_dispatch.rs"]
 mod dispatch_support;
 #[path = "handler_exited_outputs.rs"]
@@ -57,6 +58,8 @@ mod server_access_support;
 mod session_lease_support;
 #[path = "handler_session.rs"]
 mod session_support;
+#[path = "handler_shutdown.rs"]
+mod shutdown_support;
 #[path = "handler_subscriptions.rs"]
 mod subscription_support;
 #[path = "handler_targets.rs"]
@@ -107,28 +110,12 @@ use wait_support::SdkWaitState;
 /// terminal discovery is wired in later steps.
 pub const DEFAULT_SESSION_SIZE: TerminalSize = TerminalSize { cols: 80, rows: 24 };
 const HOOK_EVENT_BUFFER: usize = 256;
-const SHUTDOWN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::handler) enum PendingShutdownReason {
     ExitEmpty,
     KillServer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExitEmptyShutdownState {
-    StillApplies,
-    Stale,
-    Unknown,
-}
-
-impl PendingShutdownReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::ExitEmpty => "exit-empty",
-            Self::KillServer => "kill-server",
-        }
-    }
+    SeamlessUpgradeIdle,
 }
 
 #[derive(Debug)]
@@ -146,6 +133,8 @@ pub(crate) struct RequestHandler {
     shutdown_requested: Arc<AtomicBool>,
     shutdown_reason: Arc<StdMutex<Option<PendingShutdownReason>>>,
     shutdown_retry_scheduled: Arc<AtomicBool>,
+    active_detached_connections: Arc<StdMutex<HashSet<u64>>>,
+    active_detached_requests: Arc<AtomicUsize>,
     shutdown_handle: Arc<StdMutex<Option<ShutdownHandle>>>,
     config_loading_depth: Arc<AtomicUsize>,
     next_connection_id: Arc<AtomicU64>,
@@ -179,6 +168,8 @@ impl Clone for RequestHandler {
             shutdown_requested: self.shutdown_requested.clone(),
             shutdown_reason: self.shutdown_reason.clone(),
             shutdown_retry_scheduled: self.shutdown_retry_scheduled.clone(),
+            active_detached_connections: self.active_detached_connections.clone(),
+            active_detached_requests: self.active_detached_requests.clone(),
             shutdown_handle: self.shutdown_handle.clone(),
             config_loading_depth: self.config_loading_depth.clone(),
             next_connection_id: self.next_connection_id.clone(),
@@ -213,6 +204,8 @@ pub(crate) struct WeakRequestHandler {
     shutdown_requested: Weak<AtomicBool>,
     shutdown_reason: Weak<StdMutex<Option<PendingShutdownReason>>>,
     shutdown_retry_scheduled: Weak<AtomicBool>,
+    active_detached_connections: Weak<StdMutex<HashSet<u64>>>,
+    active_detached_requests: Weak<AtomicUsize>,
     shutdown_handle: Weak<StdMutex<Option<ShutdownHandle>>>,
     config_loading_depth: Weak<AtomicUsize>,
     next_connection_id: Weak<AtomicU64>,
@@ -244,6 +237,8 @@ impl WeakRequestHandler {
             shutdown_requested: self.shutdown_requested.upgrade()?,
             shutdown_reason: self.shutdown_reason.upgrade()?,
             shutdown_retry_scheduled: self.shutdown_retry_scheduled.upgrade()?,
+            active_detached_connections: self.active_detached_connections.upgrade()?,
+            active_detached_requests: self.active_detached_requests.upgrade()?,
             shutdown_handle: self.shutdown_handle.upgrade()?,
             config_loading_depth: self.config_loading_depth.upgrade()?,
             next_connection_id: self.next_connection_id.upgrade()?,
@@ -346,6 +341,8 @@ impl RequestHandler {
             shutdown_requested: Arc::new(AtomicBool::new(false)),
             shutdown_reason: Arc::new(StdMutex::new(None)),
             shutdown_retry_scheduled: Arc::new(AtomicBool::new(false)),
+            active_detached_connections: Arc::new(StdMutex::new(HashSet::new())),
+            active_detached_requests: Arc::new(AtomicUsize::new(0)),
             shutdown_handle: Arc::new(StdMutex::new(None)),
             config_loading_depth: Arc::new(AtomicUsize::new(0)),
             next_connection_id: Arc::new(AtomicU64::new(1)),
@@ -385,6 +382,8 @@ impl RequestHandler {
             shutdown_requested: Arc::downgrade(&self.shutdown_requested),
             shutdown_reason: Arc::downgrade(&self.shutdown_reason),
             shutdown_retry_scheduled: Arc::downgrade(&self.shutdown_retry_scheduled),
+            active_detached_connections: Arc::downgrade(&self.active_detached_connections),
+            active_detached_requests: Arc::downgrade(&self.active_detached_requests),
             shutdown_handle: Arc::downgrade(&self.shutdown_handle),
             config_loading_depth: Arc::downgrade(&self.config_loading_depth),
             next_connection_id: Arc::downgrade(&self.next_connection_id),
@@ -449,132 +448,6 @@ impl RequestHandler {
             .and_then(|server_access| server_access.mode_for_identity(&peer.user))
     }
 
-    pub(crate) fn request_shutdown_if_pending(&self) -> bool {
-        if !self.shutdown_requested.load(Ordering::SeqCst) {
-            return false;
-        }
-        let reason = *self
-            .shutdown_reason
-            .lock()
-            .expect("shutdown reason mutex must not be poisoned");
-        if matches!(reason, Some(PendingShutdownReason::ExitEmpty)) {
-            match self.exit_empty_shutdown_state() {
-                ExitEmptyShutdownState::StillApplies => {}
-                ExitEmptyShutdownState::Stale => {
-                    self.shutdown_requested.store(false, Ordering::SeqCst);
-                    *self
-                        .shutdown_reason
-                        .lock()
-                        .expect("shutdown reason mutex must not be poisoned") = None;
-                    record_shutdown_request("stale-exit-empty-cancelled");
-                    return false;
-                }
-                ExitEmptyShutdownState::Unknown => {
-                    self.schedule_shutdown_retry();
-                    return false;
-                }
-            }
-        }
-        if !self
-            .subscriptions
-            .lock()
-            .expect("subscription registry mutex must not be poisoned")
-            .is_empty()
-        {
-            return false;
-        }
-        if !self
-            .retained_exited_outputs
-            .lock()
-            .expect("retained exited output mutex must not be poisoned")
-            .is_empty(std::time::Instant::now())
-        {
-            return false;
-        }
-        if !self.shutdown_requested.swap(false, Ordering::SeqCst) {
-            return false;
-        }
-        let reason = self
-            .shutdown_reason
-            .lock()
-            .expect("shutdown reason mutex must not be poisoned")
-            .take()
-            .map(PendingShutdownReason::as_str)
-            .unwrap_or("unknown");
-        if let Some(handle) = self
-            .shutdown_handle
-            .lock()
-            .expect("shutdown handle mutex must not be poisoned")
-            .clone()
-        {
-            record_shutdown_request(reason);
-            handle.request_shutdown();
-        }
-        true
-    }
-
-    fn schedule_shutdown_retry(&self) {
-        if self
-            .shutdown_retry_scheduled
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let Some(runtime) = self
-            .server_task_runtime()
-            .or_else(|| tokio::runtime::Handle::try_current().ok())
-        else {
-            self.shutdown_retry_scheduled.store(false, Ordering::SeqCst);
-            return;
-        };
-
-        let handler = self.clone();
-        runtime.spawn(async move {
-            tokio::time::sleep(SHUTDOWN_RETRY_DELAY).await;
-            handler
-                .shutdown_retry_scheduled
-                .store(false, Ordering::SeqCst);
-            let _ = handler.request_shutdown_if_pending();
-        });
-    }
-
-    pub(in crate::handler) fn queue_shutdown_request(&self, reason: PendingShutdownReason) {
-        let mut pending_reason = self
-            .shutdown_reason
-            .lock()
-            .expect("shutdown reason mutex must not be poisoned");
-        if matches!(
-            (*pending_reason, reason),
-            (
-                Some(PendingShutdownReason::KillServer),
-                PendingShutdownReason::ExitEmpty
-            )
-        ) {
-            return;
-        }
-        record_shutdown_queued(reason.as_str());
-        *pending_reason = Some(reason);
-        self.shutdown_requested.store(true, Ordering::SeqCst);
-    }
-
-    fn exit_empty_shutdown_state(&self) -> ExitEmptyShutdownState {
-        let Ok(state) = self.state.try_lock() else {
-            return ExitEmptyShutdownState::Unknown;
-        };
-        if state.sessions.is_empty()
-            && matches!(
-                state.options.resolve(None, OptionName::ExitEmpty),
-                Some("on")
-            )
-        {
-            ExitEmptyShutdownState::StillApplies
-        } else {
-            ExitEmptyShutdownState::Stale
-        }
-    }
-
     #[cfg(test)]
     fn install_paste_buffer_delete_pause(&self) -> Arc<PasteBufferDeletePause> {
         let pause = Arc::new(PasteBufferDeletePause::default());
@@ -620,17 +493,6 @@ impl RequestHandler {
                     .join("\n"),
             )),
         }
-    }
-}
-
-impl RequestHandler {
-    async fn handle_kill_server(&self) -> Response {
-        self.retained_exited_outputs
-            .lock()
-            .expect("retained exited output mutex must not be poisoned")
-            .clear();
-        self.queue_shutdown_request(PendingShutdownReason::KillServer);
-        Response::KillServer(KillServerResponse)
     }
 }
 

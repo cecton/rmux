@@ -119,6 +119,101 @@ async fn kill_server_sets_shutdown_flag() {
 }
 
 #[tokio::test]
+async fn daemon_status_reports_version_and_activity_counts() {
+    let handler = RequestHandler::new();
+    let alpha = session_name("alpha");
+    let created = handler
+        .handle(Request::NewSession(NewSessionRequest {
+            session_name: alpha.clone(),
+            detached: true,
+            size: None,
+            environment: None,
+        }))
+        .await;
+    assert!(matches!(created, Response::NewSession(_)));
+
+    let (control_tx, _control_rx) = mpsc::unbounded_channel();
+    let _attach_id = handler
+        .register_attach(std::process::id(), alpha, control_tx)
+        .await;
+
+    let response = handler
+        .handle(Request::DaemonStatus(rmux_proto::DaemonStatusRequest))
+        .await;
+    let Response::DaemonStatus(status) = response else {
+        panic!("expected daemon status response");
+    };
+    assert_eq!(status.rmux_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(status.wire_version, rmux_proto::RMUX_WIRE_VERSION);
+    assert_eq!(status.session_count, 1);
+    assert_eq!(status.client_count, 1);
+}
+
+#[tokio::test]
+async fn shutdown_if_idle_queues_shutdown_only_when_empty() {
+    let handler = RequestHandler::new();
+
+    let response = handler
+        .handle(Request::ShutdownIfIdle(rmux_proto::ShutdownIfIdleRequest))
+        .await;
+    assert_eq!(
+        response,
+        Response::ShutdownIfIdle(rmux_proto::ShutdownIfIdleResponse {
+            shutdown: true,
+            session_count: 0,
+            client_count: 0,
+        })
+    );
+    assert!(handler.request_shutdown_if_pending());
+}
+
+#[tokio::test]
+async fn shutdown_if_idle_refuses_live_sessions() {
+    let handler = RequestHandler::new();
+    let created = handler
+        .handle(Request::NewSession(NewSessionRequest {
+            session_name: session_name("alpha"),
+            detached: true,
+            size: None,
+            environment: None,
+        }))
+        .await;
+    assert!(matches!(created, Response::NewSession(_)));
+
+    let response = handler
+        .handle(Request::ShutdownIfIdle(rmux_proto::ShutdownIfIdleRequest))
+        .await;
+    assert_eq!(
+        response,
+        Response::ShutdownIfIdle(rmux_proto::ShutdownIfIdleResponse {
+            shutdown: false,
+            session_count: 1,
+            client_count: 0,
+        })
+    );
+    assert!(!handler.request_shutdown_if_pending());
+}
+
+#[tokio::test]
+async fn shutdown_if_idle_refuses_in_flight_detached_requests() {
+    let handler = RequestHandler::new();
+    let _guard = handler.begin_detached_request();
+
+    let response = handler
+        .handle(Request::ShutdownIfIdle(rmux_proto::ShutdownIfIdleRequest))
+        .await;
+    assert_eq!(
+        response,
+        Response::ShutdownIfIdle(rmux_proto::ShutdownIfIdleResponse {
+            shutdown: false,
+            session_count: 0,
+            client_count: 1,
+        })
+    );
+    assert!(!handler.request_shutdown_if_pending());
+}
+
+#[tokio::test]
 async fn server_access_protects_owner_uid() {
     let handler = RequestHandler::with_owner_uid(current_owner_uid());
 

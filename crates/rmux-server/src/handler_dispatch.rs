@@ -103,6 +103,9 @@ impl RequestHandler {
             };
             return HandleOutcome::response(response);
         }
+        if let Request::DaemonStatus(_request) = request {
+            return HandleOutcome::response(self.handle_daemon_status(connection_id).await);
+        }
 
         if let Some(error) = self.take_startup_config_error().await {
             return HandleOutcome::response(Response::Error(ErrorResponse { error }));
@@ -218,6 +221,9 @@ impl RequestHandler {
             }
             Request::KillServer(_request) => {
                 HandleOutcome::response(self.handle_kill_server().await)
+            }
+            Request::ShutdownIfIdle(_request) => {
+                HandleOutcome::response(self.handle_shutdown_if_idle(connection_id).await)
             }
             Request::LockServer(_request) => {
                 HandleOutcome::response(self.handle_lock_server().await)
