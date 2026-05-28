@@ -232,6 +232,7 @@ fn serde_round_trips_preserve_glyphs_colors_attributes_cursor_and_padding() {
         cells: vec![cell("x")],
         cursor: PaneCursor::default(),
         revision: 0,
+        mode: 0,
     };
     let json_err =
         serde_json::to_value(&invalid).expect_err("JSON serialization checks row-major shape");
@@ -321,6 +322,7 @@ fn malformed_or_zero_width_snapshots_do_not_panic_in_helpers() {
         cells: vec![cell("x"), PaneCell::padding()],
         cursor: PaneCursor::default(),
         revision: 0,
+        mode: 0,
     };
 
     assert!(!malformed.is_row_major_shape());
@@ -345,6 +347,7 @@ fn malformed_or_zero_width_snapshots_do_not_panic_in_helpers() {
         cells: Vec::new(),
         cursor: PaneCursor::new(0, 0, true, 0),
         revision: 0,
+        mode: 0,
     };
     assert!(zero_cols.is_row_major_shape());
     assert_eq!(zero_cols.row_cells(0), Some(&[][..]));

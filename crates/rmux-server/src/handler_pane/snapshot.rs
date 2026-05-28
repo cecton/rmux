@@ -55,7 +55,7 @@ impl RequestHandler {
             Err(error) => return Response::Error(ErrorResponse { error }),
         };
 
-        let (cols, rows, cells, cursor, output_sequence, history_size, history_bytes) = {
+        let (cols, rows, cells, cursor, mode_bits, output_sequence, history_size, history_bytes) = {
             let transcript = transcript
                 .lock()
                 .expect("pane transcript mutex must not be poisoned");
@@ -63,10 +63,11 @@ impl RequestHandler {
             let size = screen.size();
             let cols = size.cols;
             let rows = size.rows;
+            let mode_bits = screen.mode();
             let history_size = screen.history_size();
             let history_bytes = screen.history_bytes();
             let (cursor_x, cursor_y) = screen.cursor_position();
-            let cursor_visible = (screen.mode() & mode::MODE_CURSOR) != 0;
+            let cursor_visible = (mode_bits & mode::MODE_CURSOR) != 0;
             let cursor = PaneSnapshotCursor {
                 row: cursor_coord_to_u16(cursor_y),
                 col: cursor_coord_to_u16(cursor_x),
@@ -84,6 +85,7 @@ impl RequestHandler {
                 rows,
                 cells,
                 cursor,
+                mode_bits,
                 output_sequence,
                 history_size,
                 history_bytes,
@@ -95,6 +97,7 @@ impl RequestHandler {
             rows,
             &cells,
             &cursor,
+            mode_bits,
             output_sequence,
             history_size,
             history_bytes,
@@ -116,6 +119,7 @@ impl RequestHandler {
             cells,
             cursor,
             revision,
+            mode: mode_bits,
         })
     }
 
@@ -255,6 +259,7 @@ fn compute_snapshot_fingerprint(
     rows: u16,
     cells: &[PaneSnapshotCell],
     cursor: &PaneSnapshotCursor,
+    mode_bits: u32,
     output_sequence: u64,
     history_size: usize,
     history_bytes: usize,
@@ -267,6 +272,7 @@ fn compute_snapshot_fingerprint(
     cursor.col.hash(&mut hasher);
     cursor.visible.hash(&mut hasher);
     cursor.style.hash(&mut hasher);
+    mode_bits.hash(&mut hasher);
     for cell in cells {
         cell.text.hash(&mut hasher);
         cell.width.hash(&mut hasher);
@@ -437,49 +443,54 @@ mod tests {
     #[test]
     fn compute_snapshot_fingerprint_is_never_zero_for_default_inputs() {
         let cursor = snapshot_cursor(0, 0);
-        let fingerprint = compute_snapshot_fingerprint(0, 0, &[], &cursor, 0, 0, 0, 0);
+        let fingerprint = compute_snapshot_fingerprint(0, 0, &[], &cursor, 0, 0, 0, 0, 0);
         assert_ne!(fingerprint, 0);
     }
 
     #[test]
     fn compute_snapshot_fingerprint_changes_with_each_observable_field() {
         let cursor = snapshot_cursor(0, 0);
-        let baseline = compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 1);
+        let baseline = compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 0, 1);
 
         // Each observable input must influence the revision. We do not assert
         // exact deltas (which would couple to the hash internals); only that
         // the revision value moves when one input changes.
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(81, 24, &[], &cursor, 0, 0, 0, 1)
+            compute_snapshot_fingerprint(81, 24, &[], &cursor, 0, 0, 0, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 25, &[], &cursor, 0, 0, 0, 1)
+            compute_snapshot_fingerprint(80, 25, &[], &cursor, 0, 0, 0, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[], &cursor, 1, 0, 0, 1)
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 1, 0, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 1, 0, 1)
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 1, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 1, 1)
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 1, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 2)
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 0, 0, 0, 0, 2)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[], &snapshot_cursor(1, 0), 0, 0, 0, 1)
+            compute_snapshot_fingerprint(80, 24, &[], &snapshot_cursor(1, 0), 0, 0, 0, 0, 1)
         );
         assert_ne!(
             baseline,
-            compute_snapshot_fingerprint(80, 24, &[baseline_cell()], &cursor, 0, 0, 0, 1)
+            compute_snapshot_fingerprint(80, 24, &[baseline_cell()], &cursor, 0, 0, 0, 0, 1)
+        );
+        // Mode changes must also produce a different fingerprint.
+        assert_ne!(
+            baseline,
+            compute_snapshot_fingerprint(80, 24, &[], &cursor, 1, 0, 0, 0, 1)
         );
     }
 
@@ -490,8 +501,8 @@ mod tests {
         // this fingerprint by `PaneSnapshotRevisionRegistry`.
         let cursor = snapshot_cursor(2, 5);
         let cells = vec![baseline_cell(); 4];
-        let a = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 7, 1, 100, 9);
-        let b = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 7, 1, 100, 9);
+        let a = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 0x20, 7, 1, 100, 9);
+        let b = compute_snapshot_fingerprint(80, 24, &cells, &cursor, 0x20, 7, 1, 100, 9);
         assert_eq!(a, b);
     }
 

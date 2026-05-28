@@ -20,6 +20,30 @@ pub use color::PaneColor;
 pub use cursor::PaneCursor;
 pub use glyph::PaneGlyph;
 
+/// Terminal mode flag constants matching rmux-core's `input::mode` values.
+///
+/// These are the mode bits that can appear in [`PaneSnapshot::mode`].
+pub mod terminal_mode {
+    /// Cursor visible (DECTCEM).
+    pub const CURSOR: u32 = 0x1;
+    /// Application cursor keys (DECCKM).
+    pub const KCURSOR: u32 = 0x4;
+    /// Standard mouse reporting (DECSET 1000).
+    pub const MOUSE_STANDARD: u32 = 0x20;
+    /// Button-event mouse tracking (DECSET 1002).
+    pub const MOUSE_BUTTON: u32 = 0x40;
+    /// Mouse UTF-8 mode (DECSET 1005).
+    pub const MOUSE_UTF8: u32 = 0x100;
+    /// SGR mouse mode (DECSET 1006).
+    pub const MOUSE_SGR: u32 = 0x200;
+    /// All-event mouse tracking (DECSET 1003).
+    pub const MOUSE_ALL: u32 = 0x1000;
+    /// Bracketed paste mode (DECSET 2004).
+    pub const BRACKETPASTE: u32 = 0x400;
+    /// Focus in/out events (DECSET 1004).
+    pub const FOCUSON: u32 = 0x800;
+}
+
 /// A captured pane grid in row-major cell order.
 ///
 /// `revision` is a daemon-derived counter that changes whenever the captured
@@ -48,14 +72,23 @@ pub struct PaneSnapshot {
     /// snapshot for an exited or no-longer-listed pane carries a revision
     /// distinct from any prior live revision.
     pub revision: u64,
+    /// Terminal mode bitfield from the daemon's VT parser.
+    ///
+    /// Contains the DEC private mode flags active at capture time — mouse
+    /// tracking, cursor visibility, bracketed paste, application keypad,
+    /// and other terminal modes. Use [`Self::mouse_is_active`] and
+    /// [`Self::mouse_is_sgr`] to check mouse-specific modes. A value of
+    /// zero means no special modes are active (plain scrolling terminal).
+    pub mode: u32,
 }
 
 impl PaneSnapshot {
     /// Creates a snapshot after checking the row-major cell count.
     ///
     /// The expected cell count is `rows * cols`. Zero-sized dimensions are
-    /// allowed and therefore expect zero cells. The revision defaults to `0`;
-    /// use [`Self::with_revision`] to attach a daemon-derived revision.
+    /// allowed and therefore expect zero cells. The revision defaults to `0`
+    /// and mode defaults to `0`; use [`Self::with_revision`] and
+    /// [`Self::with_mode`] to attach daemon-derived values.
     pub fn new(
         cols: u16,
         rows: u16,
@@ -68,6 +101,7 @@ impl PaneSnapshot {
             cells,
             cursor,
             revision: 0,
+            mode: 0,
         };
         snapshot.validate_shape()?;
         Ok(snapshot)
@@ -77,6 +111,13 @@ impl PaneSnapshot {
     #[must_use]
     pub fn with_revision(mut self, revision: u64) -> Self {
         self.revision = revision;
+        self
+    }
+
+    /// Returns a copy of this snapshot with the supplied mode bitfield.
+    #[must_use]
+    pub fn with_mode(mut self, mode: u32) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -223,6 +264,42 @@ impl PaneSnapshot {
         self.visible_lines().join("\n")
     }
 
+    // ------------------------------------------------------------------
+    // Terminal mode query helpers
+    // ------------------------------------------------------------------
+
+    /// Returns `true` if any mouse tracking mode is active.
+    #[must_use]
+    pub fn mouse_is_active(&self) -> bool {
+        self.mode
+            & (terminal_mode::MOUSE_STANDARD
+                | terminal_mode::MOUSE_BUTTON
+                | terminal_mode::MOUSE_ALL)
+            != 0
+    }
+
+    /// Returns `true` if SGR mouse mode (DECSET 1006) is active.
+    #[must_use]
+    pub fn mouse_is_sgr(&self) -> bool {
+        self.mode & terminal_mode::MOUSE_SGR != 0
+    }
+
+    /// Returns `true` if all-event (motion) mouse tracking (DECSET 1003)
+    /// is active. When this is set, the PTY application expects motion
+    /// events (code 35) in addition to button and drag events.
+    #[must_use]
+    pub fn mouse_is_all(&self) -> bool {
+        self.mode & terminal_mode::MOUSE_ALL != 0
+    }
+
+    /// Returns `true` if button-event mouse tracking (DECSET 1002) is
+    /// active. This is the mode most TUI applications request — button
+    /// presses, releases, and drags, but NOT unmodified motion.
+    #[must_use]
+    pub fn mouse_is_button(&self) -> bool {
+        self.mode & terminal_mode::MOUSE_BUTTON != 0
+    }
+
     fn lossy_row_cells(&self, row: u16) -> Option<&[PaneCell]> {
         if row >= self.rows {
             return None;
@@ -254,6 +331,7 @@ impl Serialize for PaneSnapshot {
             cells: &self.cells,
             cursor: &self.cursor,
             revision: self.revision,
+            mode: self.mode,
         }
         .serialize(serializer)
     }
@@ -266,7 +344,11 @@ impl<'de> Deserialize<'de> for PaneSnapshot {
     {
         let fields = PaneSnapshotFields::deserialize(deserializer)?;
         Self::new(fields.cols, fields.rows, fields.cells, fields.cursor)
-            .map(|snapshot| snapshot.with_revision(fields.revision))
+            .map(|snapshot| {
+                snapshot
+                    .with_revision(fields.revision)
+                    .with_mode(fields.mode)
+            })
             .map_err(serde::de::Error::custom)
     }
 }
@@ -278,6 +360,7 @@ struct PaneSnapshotFieldsRef<'a> {
     cells: &'a [PaneCell],
     cursor: &'a PaneCursor,
     revision: u64,
+    mode: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -288,6 +371,7 @@ struct PaneSnapshotFields {
     cells: Vec<PaneCell>,
     cursor: PaneCursor,
     revision: u64,
+    mode: u32,
 }
 
 /// Error returned when a snapshot's dimensions do not match its cell vector.

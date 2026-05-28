@@ -642,6 +642,7 @@ fn snapshot_response() -> PaneSnapshotResponse {
             style: 0,
         },
         revision: 1,
+        mode: 0,
     }
 }
 

@@ -583,6 +583,7 @@ fn snapshot_response(text: &str, revision: u64) -> PaneSnapshotResponse {
             style: 0,
         },
         revision,
+        mode: 0,
     }
 }
 

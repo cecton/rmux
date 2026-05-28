@@ -297,6 +297,10 @@ pub struct PaneSnapshotResponse {
     pub cursor: PaneSnapshotCursor,
     /// Daemon-derived revision counter for this captured state.
     pub revision: u64,
+    /// Terminal mode bitfield from the daemon's VT parser.
+    /// Contains mouse tracking, cursor, bracketed paste, and other DEC private
+    /// mode flags. Zero means no special modes are active.
+    pub mode: u32,
 }
 
 /// Response payload for `list-panes`.

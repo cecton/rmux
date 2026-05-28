@@ -319,6 +319,7 @@ fn snapshot_from_response_carries_cells_cursor_and_revision() {
             style: 4,
         },
         revision: 0xCAFE_BEEF,
+        mode: 0,
     };
     let snapshot = snapshot_from_response(response).expect("valid wire shape");
     assert_eq!(snapshot.cols, 2);
@@ -345,6 +346,7 @@ fn snapshot_from_response_handles_zero_dimensions() {
             style: 0,
         },
         revision: 0,
+        mode: 0,
     };
     let snapshot = snapshot_from_response(response).expect("valid zero-size wire shape");
     assert!(snapshot.is_row_major_shape());
@@ -364,6 +366,7 @@ fn snapshot_from_response_rejects_malformed_wire_shape() {
             style: 0,
         },
         revision: 1,
+        mode: 0,
     };
 
     let error = snapshot_from_response(response).expect_err("shape mismatch is protocol error");

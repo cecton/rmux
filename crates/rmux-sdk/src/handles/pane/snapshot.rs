@@ -57,6 +57,7 @@ pub(super) fn snapshot_from_response(response: PaneSnapshotResponse) -> Result<P
         cells,
         cursor,
         revision: response.revision,
+        mode: response.mode,
     };
     snapshot.validate_shape().map_err(|error| {
         parse_error(format!(

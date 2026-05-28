@@ -645,6 +645,7 @@ fn pane_snapshot_output_and_lag_response_kinds_stay_lane_scoped() {
             style: 0,
         },
         revision: 55,
+        mode: 0,
     });
     let output_cursor = Response::PaneOutputCursor(PaneOutputCursorResponse {
         subscription_id: PaneOutputSubscriptionId::new(7),
