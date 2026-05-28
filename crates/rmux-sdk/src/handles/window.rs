@@ -10,7 +10,8 @@ use crate::{
     SessionId, SessionInfo, TerminalSizeSpec, WindowId, WindowInfo, WindowRef,
 };
 use rmux_proto::{
-    KillWindowRequest, ListPanesRequest, ListSessionsRequest, ListWindowsRequest, Request, Response,
+    KillWindowRequest, ListPanesRequest, ListSessionsRequest, ListWindowsRequest,
+    ResizeWindowRequest, Request, Response,
 };
 
 const SESSION_INFO_FORMAT: &str = "#{session_name}\t#{session_id}";
@@ -118,6 +119,27 @@ impl Window {
     /// session metadata, or is empty when the session is gone.
     pub async fn info(&self) -> Result<InfoSnapshot> {
         window_info_snapshot(&self.transport, &self.target).await
+    }
+
+    /// Resizes the window to the given dimensions.
+    ///
+    /// Both `width` and `height` are optional — omitted axes keep their
+    /// current size.
+    pub async fn resize(&self, width: Option<u16>, height: Option<u16>) -> Result<()> {
+        let response = self
+            .transport
+            .request(Request::ResizeWindow(ResizeWindowRequest {
+                target: (&self.target).into(),
+                width,
+                height,
+                adjustment: None,
+            }))
+            .await?;
+
+        match response {
+            Response::ResizeWindow(_) => Ok(()),
+            response => Err(unexpected_response("resize-window", response)),
+        }
     }
 
     /// Consumes this handle and kills the addressed window through the daemon.
